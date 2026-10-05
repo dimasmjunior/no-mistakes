@@ -240,7 +240,9 @@ func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source
 // findings were selected for fix, how the selection was made, and the merged
 // finding list dispatched to the fix agent. The same empty-string versus
 // DeclinedSelectionJSON distinction described on SetStepRoundSelection
-// applies here.
+// applies here. The decline set is derived on read as the complement of the
+// selection (minus any finding an earlier user round of the same step chose to
+// fix), never stored, so there is no decline column to keep in step with it.
 func (d *DB) SetStepRoundUserDecision(id string, selectedFindingIDs *string, source string, userFindingsJSON *string) error {
 	var selectionSource *string
 	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {

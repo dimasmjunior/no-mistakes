@@ -74,12 +74,21 @@ func isAxiWaitElapsed(parent, drive context.Context, err error) bool {
 	return deadlinePassed(drive)
 }
 
-func emitAxiWaitElapsed(cmd *cobra.Command, wait time.Duration, reattach string) error {
-	return emitError(cmd, 1, fmt.Sprintf("wait of %s elapsed while driving the run", wait),
-		"This bounded hold ended; it is not a pipeline failure and does not mean the daemon is dead.",
-		"Run `no-mistakes axi status` to inspect progress",
-		fmt.Sprintf("Re-run `%s` to reattach for another %s", reattach, wait),
+// emitAxiWaitElapsed reports a bounded hold ending without an outcome. Lead
+// fields open the document, so a call that recorded something first (a respond
+// echoing its dispositions, an answer echoing its own) still reports it.
+func emitAxiWaitElapsed(cmd *cobra.Command, wait time.Duration, reattach string, lead ...toon.Field) error {
+	fields := append([]toon.Field{}, lead...)
+	fields = append(fields,
+		toon.Field{Key: "error", Value: fmt.Sprintf("wait of %s elapsed while driving the run", wait)},
+		toon.Field{Key: "help", Value: []string{
+			"This bounded hold ended; it is not a pipeline failure and does not mean the daemon is dead.",
+			"Run `no-mistakes axi status` to inspect progress",
+			fmt.Sprintf("Re-run `%s` to reattach for another %s", reattach, wait),
+		}},
 	)
+	emitDoc(cmd, fields...)
+	return &exitError{code: 1}
 }
 
 // terminalStatus reports whether a run has reached a final state.
@@ -1108,7 +1117,7 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
 			}
-			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, ""); err != nil {
+			if _, err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil, nil, ""); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
 			pendingGate = gateKey
@@ -1209,25 +1218,83 @@ func getRunInfo(ctx context.Context, socketPath, runID string) (*ipc.RunInfo, er
 	return (&ipcRunStateSource{socketPath: socketPath}).Reconcile(ctx, runID)
 }
 
-// sendRespond issues an approval action to the daemon for a step.
-func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) error {
+// sendRespond issues an approval action to the daemon for a step and returns
+// what it recorded. A response the daemon refused is returned as a
+// *respondRefusalError - the gate is still parked and the response can be
+// corrected.
+func sendRespond(client *ipc.Client, runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, added []types.Finding, approvalReason string) (ipc.RespondResult, error) {
 	params := &ipc.RespondParams{
-		RunID:          runID,
-		Step:           step,
-		Action:         action,
-		FindingIDs:     findingIDs,
-		Instructions:   instructions,
-		AddedFindings:  added,
-		ApprovalReason: approvalReason,
+		RunID:            runID,
+		Step:             step,
+		Action:           action,
+		FindingIDs:       findingIDs,
+		IgnoreFindingIDs: ignoreFindingIDs,
+		Instructions:     instructions,
+		AddedFindings:    added,
+		ApprovalReason:   approvalReason,
 	}
 	var result ipc.RespondResult
 	if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
-		return err
+		return ipc.RespondResult{}, err
 	}
 	if !result.OK {
-		return fmt.Errorf("daemon rejected the response")
+		if result.Refusal != "" {
+			return result, &respondRefusalError{refusal: result.Refusal, missing: result.Missing, help: result.Help}
+		}
+		return result, fmt.Errorf("daemon rejected the response")
 	}
-	return nil
+	return result, nil
+}
+
+// respondRefusalError carries a refusal the daemon reported for a response that
+// left the gate parked.
+type respondRefusalError struct {
+	refusal string
+	missing []string
+	help    string
+}
+
+func (e *respondRefusalError) Error() string { return e.refusal }
+
+// helpLines renders the refusal as the structured error's help entries: the
+// daemon's own next action plus the missing pending IDs the response has to
+// cover.
+func (e *respondRefusalError) helpLines() []string {
+	var help []string
+	if len(e.missing) > 0 {
+		help = append(help, fmt.Sprintf("Unaccounted finding IDs: %s - add them to --findings or --ignore", strings.Join(e.missing, ",")))
+	}
+	if e.help != "" {
+		help = append(help, e.help)
+	}
+	if len(help) == 0 {
+		help = append(help, "Run `no-mistakes axi status` to list the gate's finding IDs")
+	}
+	return help
+}
+
+// respondDispositionFields renders what a response recorded for its gate. It is
+// empty for actions that record no finding-level decision, so only a fix
+// response is echoed.
+func respondDispositionFields(result ipc.RespondResult) []toon.Field {
+	if !result.OK || (result.Fixed == nil && result.Ignored == nil && result.Kept == nil) {
+		return nil
+	}
+	fixed, ignored, kept := result.Fixed, result.Ignored, result.Kept
+	if fixed == nil {
+		fixed = []string{}
+	}
+	if ignored == nil {
+		ignored = []string{}
+	}
+	if kept == nil {
+		kept = []string{}
+	}
+	return []toon.Field{{Key: "recorded", Value: toon.NewObject(
+		toon.Field{Key: "fixed", Value: fixed},
+		toon.Field{Key: "ignored", Value: ignored},
+		toon.Field{Key: "kept", Value: kept},
+	)}}
 }
 
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
@@ -1355,7 +1422,7 @@ func successReportHelp(fixes []fixRow) []string {
 }
 
 func newAxiRespondCmd() *cobra.Command {
-	var action, step, findings, instructions, addFinding, reason string
+	var action, step, findings, ignore, instructions, addFinding, reason string
 	var autoYes bool
 	var wait time.Duration
 
@@ -1364,6 +1431,13 @@ func newAxiRespondCmd() *cobra.Command {
 		Short: "Answer the current approval gate and continue the run",
 		Long: "Sends approve/fix/skip for the step currently awaiting approval, then\n" +
 			"blocks until the next gate, CI-ready decision point, or final outcome.\n\n" +
+			"With --action fix, declines are explicit: every finding the gate shows must\n" +
+			"be listed in --findings or --ignore, or the response is refused and the gate\n" +
+			"stays parked. A finding an earlier round of the same step already decided may\n" +
+			"be omitted to keep that decision, and naming one that round chose to fix in\n" +
+			"--ignore is refused too: reverting an applied fix is out of scope for a gate\n" +
+			"response. The recorded dispositions (fixed, ignored, kept) are echoed in the\n" +
+			"output.\n\n" +
 			"--wait bounds this hold (default 8m) so an agent harness with a 10-minute\n" +
 			"tool cap gets a structured return instead of an unbounded hang. Elapsed wait\n" +
 			"is not a failed run: inspect with axi status and reattach. A slow live daemon\n" +
@@ -1381,6 +1455,7 @@ func newAxiRespondCmd() *cobra.Command {
 					action:       action,
 					step:         step,
 					findings:     findings,
+					ignore:       ignore,
 					instructions: instructions,
 					addFinding:   addFinding,
 					reason:       reason,
@@ -1393,6 +1468,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&action, "action", "", "approve | fix | skip (required)")
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
+	cmd.Flags().StringVar(&ignore, "ignore", "", "comma-separated finding IDs to decline (with --action fix); every finding the gate shows must be in --findings or --ignore unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
 	cmd.Flags().StringVar(&reason, "reason", "", "exception reason preserved with Test approval (with --action approve)")
 	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
@@ -1405,6 +1481,7 @@ type respondArgs struct {
 	action       string
 	step         string
 	findings     string
+	ignore       string
 	instructions string
 	addFinding   string
 	reason       string
@@ -1485,6 +1562,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	}
 
 	findingIDs := splitCSV(ra.findings)
+	ignoreIDs := splitCSV(ra.ignore)
 	var instructions map[string]string
 	var added []types.Finding
 
@@ -1507,17 +1585,29 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 			}
 			added = append(added, f)
 		}
+	} else if len(ignoreIDs) > 0 || ra.findings != "" {
+		return emitError(cmd, 2, "--findings and --ignore apply only to --action fix")
 	}
 
-	if err := sendRespond(env.client, runID, stepName, act, findingIDs, instructions, added, ra.reason); err != nil {
+	result, err := sendRespond(env.client, runID, stepName, act, findingIDs, ignoreIDs, instructions, added, ra.reason)
+	if err != nil {
+		var refusal *respondRefusalError
+		if errors.As(err, &refusal) {
+			return emitError(cmd, 2, refusal.refusal, refusal.helpLines()...)
+		}
 		return emitError(cmd, 1, fmt.Sprintf("respond to %s: %v", stepName, err))
 	}
+	// Echo what the response recorded. It is led into every output this
+	// successful call can produce - the next gate, checks-passed, a terminal
+	// outcome, or the bounded wait elapsing - so a driver always sees the
+	// dispositions of the decision it just made.
+	lead := respondDispositionFields(result)
 
 	// Let the executor consume the response before we re-read state, so we
 	// don't immediately observe the same gate we just answered.
 	if err := waitStepLeavesGate(driveCtx, env.p.Socket(), runID, string(stepName), gateIdentityFor(rv, string(stepName))); err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run")
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run", lead...)
 		}
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
@@ -1525,11 +1615,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	final, ciReady, err := driveRun(driveCtx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
 	if err != nil {
 		if isAxiWaitElapsed(ctx, driveCtx, err) {
-			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run")
+			return emitAxiWaitElapsed(cmd, ra.wait, "no-mistakes axi run", lead...)
 		}
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
-	return renderDriveResult(cmd, final, ciReady)
+	return renderDriveResult(cmd, final, ciReady, lead...)
 }
 
 // gateIdentityFor returns the identity of step's current park in rv, defaulting

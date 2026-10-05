@@ -275,6 +275,7 @@ Answer the current approval gate and continue until the next gate, CI-ready deci
 ```sh
 no-mistakes axi respond --action approve
 no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional guidance"
+no-mistakes axi respond --action fix --findings F1,F2 --ignore F3
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
 no-mistakes axi respond --action skip
 ```
@@ -283,12 +284,17 @@ no-mistakes axi respond --action skip
 | ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
 | `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
-| `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
+| `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix with `--action fix`               |
+| `--ignore`       | `string` | (none)        | Comma-separated finding IDs to decline with `--action fix`; every finding the gate shows must be in `--findings` or `--ignore` unless an earlier round of this step already decided it, and a finding that round chose to fix cannot be declined |
 | `--instructions` | `string` | (none)        | Guidance applied to selected findings with `--action fix`            |
 | `--reason`       | `string` | (none)        | Operator's exception explanation for Test approval only              |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve subsequent eligible gates until a decision point or outcome |
 | `--wait`         | `duration` | `8m`        | Maximum time for pre-drive reads and post-response driving before the caller must reattach |
+
+Declines are explicit. With `--action fix`, every finding the gate shows must appear in `--findings` or `--ignore`; a response that leaves one out is refused with the unaccounted IDs named and the gate stays parked, so a partial selection can never silently decline the findings it omitted. An ID in both lists, or an ID the gate does not show, is refused the same way. A finding an earlier round of the same step already decided may be omitted to keep that decision, which is what makes an earlier fix sticky; naming a finding that round chose to fix in `--ignore` is refused too, because reverting an applied fix is out of scope for a gate response. The recorded decline set itself is not stored: it is the complement of the selection, minus the findings an earlier round chose to fix.
+
+Every successful `respond` echoes what it recorded in a `recorded:` object: `fixed` (the findings selected), `ignored` (the findings explicitly declined), and `kept` (the findings omitted that an earlier round of this step had already decided). `--yes` resolution is unchanged: it selects every current finding.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
