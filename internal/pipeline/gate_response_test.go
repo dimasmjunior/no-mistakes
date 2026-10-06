@@ -554,3 +554,72 @@ func selectionIDsOf(t *testing.T, raw *string) []string {
 	}
 	return ids
 }
+
+func TestSplitFixResponse_ReusedIDNeedsItsOwnDecision(t *testing.T) {
+	old := userDecisionRound(t, gateFindingsThree, "R1")
+	current := strings.ReplaceAll(gateFindingsThree, `"first"`, `"unrelated defect"`)
+	if _, err := splitFixResponse(current, []*db.StepRound{old}, []string{"R2", "R3"}, nil); err == nil {
+		t.Fatal("an unrelated finding inherited the old decision")
+	}
+	got, err := splitFixResponse(current, []*db.StepRound{old}, []string{"R2", "R3"}, []string{"R1"})
+	if err != nil || strings.Join(got.Ignored, ",") != "R1" {
+		t.Fatalf("new finding cannot be declined: %+v, %v", got, err)
+	}
+}
+
+func TestSplitFixResponse_SelectedAdditionKeepsItsDecision(t *testing.T) {
+	round := userDecisionRound(t, `{"findings":[]}`, "user-1")
+	added := `{"findings":[{"id":"user-1","description":"repair logger"}]}`
+	round.UserFindingsJSON = &added
+	got, err := splitFixResponse(added, []*db.StepRound{round}, nil, nil)
+	if err != nil || strings.Join(got.Kept, ",") != "user-1" {
+		t.Fatalf("added finding lost its selection: %+v, %v", got, err)
+	}
+}
+
+func TestExecutor_DispositionEchoIncludesNormalizedAdditions(t *testing.T) {
+	for _, gate := range []string{`{"findings":[]}`, `{"findings":[{"id":"user-1","description":"existing"}]}`} {
+		t.Run(gate, func(t *testing.T) {
+			database, p, run, _ := setupTest(t)
+			sr, err := database.InsertStepResult(run.ID, types.StepReview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec := NewExecutor(database, p, nil, nil, nil, nil)
+			exec.waiting = true
+			exec.waitingStep = types.StepReview
+			exec.waitingStepResultID = sr.ID
+			exec.waitingFindings = gate
+			exec.approvalCh = make(chan approvalResponse, 1)
+			var ignored []string
+			if strings.Contains(gate, "existing") {
+				ignored = []string{"user-1"}
+			}
+			got, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, ignored, nil, []types.Finding{{Description: "repair logger"}}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "user-1"
+			if len(ignored) > 0 {
+				want = "review-1"
+			}
+			if strings.Join(got.Fixed, ",") != want {
+				t.Fatalf("fixed = %v, want %s", got.Fixed, want)
+			}
+			response := <-exec.approvalCh
+			selected, merged, _, persisted := normalizeFixSelection(gate, response, true)
+			round, err := database.InsertStepRound(sr.ID, 1, "initial", &gate, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec.recordFixDecision(round.ID, response, persisted, selected, merged)
+			rounds, err := database.GetRoundsByStep(sr.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ids := selectedIDsOf(t, rounds[0]); strings.Join(ids, ",") != want {
+				t.Fatalf("persisted = %v, want %s", ids, want)
+			}
+		})
+	}
+}

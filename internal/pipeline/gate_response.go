@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -152,7 +151,7 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 		}
 	}
 
-	chosenToFix := earlierChosenToFixIDs(rounds)
+	chosenToFix := earlierChosenToFixIDs(rounds, gateFindingsJSON)
 	var reversals []string
 	for _, id := range gate {
 		if ignoreSet[id] && chosenToFix[id] {
@@ -167,7 +166,7 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 		}
 	}
 
-	decided := earlierUserDecisionIDs(rounds)
+	decided := earlierUserDecisionIDs(rounds, gateFindingsJSON)
 	var unaccounted []string
 	for _, id := range gate {
 		if fixSet[id] || ignoreSet[id] || decided[id] {
@@ -195,51 +194,60 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 	return dispositions, nil
 }
 
-// earlierUserDecisionIDs returns every finding ID a human decided in a round of
-// this step result: the findings the round showed, which its recorded
-// selection either chose to fix or declined. An approve, skip, or abort
-// resolution decides every finding the round showed the same way.
-//
-// The auto-fix source is deliberately excluded: its complement is the findings
-// the auto-fix filter left for a later gate, not a human decision, and the
-// round-history rendering keeps that same distinction (`auto_fix_left_unselected`).
-func earlierUserDecisionIDs(rounds []*db.StepRound) map[string]bool {
-	decided := make(map[string]bool)
+func FindingDecisionKey(item types.Finding) string {
+	encoded, _ := types.MarshalFindingsJSON(types.Findings{Items: []types.Finding{findingKey(item)}})
+	return encoded
+}
+
+func ChosenFindingKeys(round *db.StepRound) map[string]bool {
+	keys := make(map[string]bool)
+	if !humanDecidedRound(round) {
+		return keys
+	}
+	for _, item := range selectedFindingIdentities([]*db.StepRound{round}) {
+		keys[FindingDecisionKey(item)] = true
+	}
+	return keys
+}
+
+func earlierUserDecisionIDs(rounds []*db.StepRound, gate string) map[string]bool {
+	keys := make(map[string]bool)
 	for _, round := range rounds {
-		if round == nil || round.FindingsJSON == nil {
-			continue
-		}
 		if !humanDecidedRound(round) {
 			continue
 		}
-		for _, id := range findingIDsInPayloadOrder(*round.FindingsJSON) {
-			decided[id] = true
-		}
-	}
-	return decided
-}
-
-// earlierChosenToFixIDs returns the finding IDs a human explicitly chose to fix
-// in a round of this step result. A gate response may not decline one of them:
-// reversal of an applied fix is out of scope for a gate response, so the
-// caller must omit the finding to keep that decision instead.
-func earlierChosenToFixIDs(rounds []*db.StepRound) map[string]bool {
-	chosen := make(map[string]bool)
-	for _, round := range rounds {
-		if round == nil || !humanDecidedRound(round) || round.SelectedFindingIDs == nil {
-			continue
-		}
-		var ids []string
-		if err := json.Unmarshal([]byte(*round.SelectedFindingIDs), &ids); err != nil {
-			continue
-		}
-		for _, id := range ids {
-			if id != "" {
-				chosen[id] = true
+		if round.FindingsJSON != nil {
+			findings, _ := types.ParseFindingsJSON(*round.FindingsJSON)
+			for _, item := range findings.Items {
+				keys[FindingDecisionKey(item)] = true
 			}
 		}
+		for key := range ChosenFindingKeys(round) {
+			keys[key] = true
+		}
 	}
-	return chosen
+	return decisionIDsInGate(keys, gate)
+}
+
+func earlierChosenToFixIDs(rounds []*db.StepRound, gate string) map[string]bool {
+	keys := make(map[string]bool)
+	for _, round := range rounds {
+		for key := range ChosenFindingKeys(round) {
+			keys[key] = true
+		}
+	}
+	return decisionIDsInGate(keys, gate)
+}
+
+func decisionIDsInGate(keys map[string]bool, gate string) map[string]bool {
+	ids := make(map[string]bool)
+	findings, _ := types.ParseFindingsJSON(gate)
+	for _, item := range findings.Items {
+		if keys[FindingDecisionKey(item)] {
+			ids[item.ID] = true
+		}
+	}
+	return ids
 }
 
 // humanDecidedRound reports whether this round's selection came from a human:

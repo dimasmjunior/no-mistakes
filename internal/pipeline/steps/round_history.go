@@ -95,39 +95,21 @@ func withChosenToFix(chosen map[string]bool, r *db.StepRound) map[string]bool {
 	if r == nil || selectionSourceValue(r.SelectionSource) != db.RoundSelectionSourceUser {
 		return chosen
 	}
-	var ids []string
-	if err := json.Unmarshal([]byte(selectionJSONValue(r.SelectedFindingIDs)), &ids); err != nil {
+	keys := pipeline.ChosenFindingKeys(r)
+	if len(keys) == 0 {
 		return chosen
 	}
-	added := false
-	for _, id := range ids {
-		if id != "" && !chosen[id] {
-			added = true
-			break
-		}
+	next := make(map[string]bool, len(chosen)+len(keys))
+	for key := range chosen {
+		next[key] = true
 	}
-	if !added {
-		return chosen
-	}
-	next := make(map[string]bool, len(chosen)+len(ids))
-	for id := range chosen {
-		next[id] = true
-	}
-	for _, id := range ids {
-		if id != "" {
-			next[id] = true
-		}
+	for key := range keys {
+		next[key] = true
 	}
 	return next
 }
 
-// branchEarlierFixes maps each loaded branch-decision round to the findings a
-// human chose to fix in an EARLIER round of the same run and step, which the
-// sticky-decline rule needs to render that round's declines. The loader's
-// window may be truncated, so a missing earlier round can only leave the set
-// smaller - it never invents a fix - and the rounds of one run and step are
-// ordered by round number within the window.
-func branchEarlierFixes(entries []*db.BranchDecisionRound) map[*db.StepRound]map[string]bool {
+func branchEarlierFixes(entries []*db.BranchDecisionRound, database *db.DB) map[*db.StepRound]map[string]bool {
 	type runStep struct {
 		runID string
 		step  types.StepName
@@ -142,13 +124,24 @@ func branchEarlierFixes(entries []*db.BranchDecisionRound) map[*db.StepRound]map
 	}
 	earlier := make(map[*db.StepRound]map[string]bool, len(entries))
 	for _, rounds := range grouped {
-		sort.SliceStable(rounds, func(i, j int) bool { return rounds[i].Round < rounds[j].Round })
-		var chosen map[string]bool
-		for _, r := range rounds {
-			if len(chosen) > 0 {
-				earlier[r] = chosen
+		loaded := rounds
+		if database != nil && rounds[0].StepResultID != "" {
+			var err error
+			loaded, err = database.GetRoundsByStep(rounds[0].StepResultID)
+			if err != nil {
+				continue
 			}
-			chosen = withChosenToFix(chosen, r)
+		}
+		sort.SliceStable(loaded, func(i, j int) bool { return loaded[i].Round < loaded[j].Round })
+		for _, target := range rounds {
+			var chosen map[string]bool
+			for _, predecessor := range loaded {
+				if predecessor.Round >= target.Round {
+					break
+				}
+				chosen = withChosenToFix(chosen, predecessor)
+			}
+			earlier[target] = chosen
 		}
 	}
 	return earlier
@@ -294,14 +287,16 @@ func branchDecisionsPromptSection(sctx *pipeline.StepContext) string {
 	}
 	// The loader returns most recent first so its bound is a recency window;
 	// render oldest first so the block reads as a history.
-	earlierFixes := branchEarlierFixes(sctx.PriorBranchDecisions)
+	earlierFixes := branchEarlierFixes(sctx.PriorBranchDecisions, sctx.DB)
 	var lines []string
 	for i := len(sctx.PriorBranchDecisions) - 1; i >= 0; i-- {
 		entry := sctx.PriorBranchDecisions[i]
 		if entry == nil {
 			continue
 		}
-		lines = appendBranchDecisionLines(lines, string(entry.StepName), entry.Round, earlierFixes[entry.Round])
+		if chosen, ok := earlierFixes[entry.Round]; ok {
+			lines = appendBranchDecisionLines(lines, string(entry.StepName), entry.Round, chosen)
+		}
 	}
 	if len(lines) == 0 {
 		return ""
@@ -372,47 +367,27 @@ func declinedFindingLines(r *db.StepRound, earlierFixes map[string]bool) []strin
 	default:
 		return nil
 	}
-	_, unselected := partitionRoundFindings(r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs)
-	return dropChosenToFix(unselected, earlierFixes)
-}
-
-// dropChosenToFix removes the findings an earlier user round of the same step
-// chose to fix from a derived decline set.
-func dropChosenToFix(lines []string, earlierFixes map[string]bool) []string {
-	if len(lines) == 0 || len(earlierFixes) == 0 {
-		return lines
-	}
-	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
-		id := findingLineID(line)
-		if id != "" && earlierFixes[id] {
-			continue
+	raw := r.FindingsJSON
+	if raw != nil {
+		findings, err := types.ParseFindingsJSON(*raw)
+		if err != nil {
+			return nil
 		}
-		kept = append(kept, line)
+		kept := findings.Items[:0]
+		for _, item := range findings.Items {
+			if !earlierFixes[pipeline.FindingDecisionKey(item)] {
+				kept = append(kept, item)
+			}
+		}
+		findings.Items = kept
+		encoded, err := types.MarshalFindingsJSON(findings)
+		if err != nil {
+			return nil
+		}
+		raw = &encoded
 	}
-	if len(kept) == 0 {
-		return nil
-	}
-	return kept
-}
-
-// findingLineID recovers the finding ID from a rendered finding line, so the
-// sticky-decline filter can key on it.
-func findingLineID(line string) string {
-	var payload struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(line), &payload); err != nil {
-		return ""
-	}
-	return payload.ID
-}
-
-func selectionJSONValue(raw *string) string {
-	if raw == nil {
-		return ""
-	}
-	return *raw
+	_, unselected := partitionRoundFindings(raw, r.UserFindingsJSON, r.SelectedFindingIDs)
+	return unselected
 }
 
 func renderDecisionSection(title, preamble string, lines []string, loaderNote string) string {

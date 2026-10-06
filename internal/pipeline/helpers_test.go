@@ -92,7 +92,7 @@ func respondFixPartialWithOverrides(t *testing.T, exec *Executor, step types.Ste
 	// A finding an earlier round of this step already chose to fix is omitted,
 	// not declined: a gate response cannot reverse an applied fix, and omitting
 	// it keeps the earlier decision.
-	alreadyFixed := earlierChosenToFix(exec, stepResultID)
+	alreadyFixed := earlierChosenToFix(exec, stepResultID, gate)
 	var ignored []string
 	for _, id := range findingIDsInPayloadOrder(gate) {
 		if selectedSet[id] || alreadyFixed[id] {
@@ -106,7 +106,7 @@ func respondFixPartialWithOverrides(t *testing.T, exec *Executor, step types.Ste
 
 // earlierChosenToFix reads the parked step's rounds for the findings a human
 // already chose to fix, which is what makes a correct client omit them.
-func earlierChosenToFix(exec *Executor, stepResultID string) map[string]bool {
+func earlierChosenToFix(exec *Executor, stepResultID, gate string) map[string]bool {
 	if exec == nil || exec.db == nil || stepResultID == "" {
 		return nil
 	}
@@ -114,7 +114,7 @@ func earlierChosenToFix(exec *Executor, stepResultID string) map[string]bool {
 	if err != nil {
 		return nil
 	}
-	return earlierChosenToFixIDs(rounds)
+	return earlierChosenToFixIDs(rounds, gate)
 }
 
 func setupTest(t *testing.T) (*db.DB, *paths.Paths, *db.Run, *db.Repo) {

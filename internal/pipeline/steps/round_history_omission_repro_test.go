@@ -57,3 +57,61 @@ func TestRoundHistory_OmittedCarriedFindingIsNotRecordedAsIgnored(t *testing.T) 
 		t.Errorf("R1 was chosen to fix in round 1, yet omitting it from round 2's --findings renders it under user_chose_to_ignore")
 	}
 }
+
+func TestRoundHistory_ReusedIDDeclineSurvivesEarlierSelection(t *testing.T) {
+	sctx, stepID := newRoundHistoryContext(t)
+	for i, description := range []string{"old defect", "new defect"} {
+		raw := `{"findings":[{"id":"R1","description":"` + description + `"}]}`
+		r, err := sctx.DB.InsertStepRound(stepID, i+1, "initial", &raw, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			selected := `["R1"]`
+			err = sctx.DB.SetStepRoundSelection(r.ID, &selected, db.RoundSelectionSourceUser)
+		} else {
+			err = sctx.DB.SetStepRoundDeclined(r.ID)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rounds, err := sctx.DB.GetRoundsByStep(stepID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := renderRoundHistoryBlocks(rounds)
+	if !strings.Contains(blocks[1], "user_chose_to_ignore:") {
+		t.Fatalf("new decline suppressed: %s", blocks[1])
+	}
+}
+
+func TestRoundHistory_BranchWindowKeepsPredecessorSelection(t *testing.T) {
+	f := newDecisionFixture(t)
+	raw := `{"findings":[{"id":"R1","description":"authorized repair"}]}`
+	for i := 1; i <= db.MaxBranchDecisionRounds+1; i++ {
+		r, err := f.db.InsertStepRound(f.reviewSR.ID, i, "initial", &raw, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			selected := `["R1"]`
+			err = f.db.SetStepRoundSelection(r.ID, &selected, db.RoundSelectionSourceUser)
+		} else {
+			err = f.db.SetStepRoundDeclined(r.ID)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, truncated, err := f.db.GetBranchDecisionRounds(f.repo.ID, f.run.Branch, "next-run", db.MaxBranchDecisionRounds)
+	if err != nil || !truncated {
+		t.Fatalf("window: %v, %v", truncated, err)
+	}
+	sctx := f.testStepContext()
+	sctx.PriorBranchDecisions = entries
+	got := branchDecisionsPromptSection(sctx)
+	if strings.Contains(got, "declined:") {
+		t.Fatalf("earlier fix became declined beyond window: %s", got)
+	}
+}

@@ -251,6 +251,8 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			return RespondDispositions{}, err
 		}
 		dispositions = split
+		_, _, _, normalized := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
+		dispositions.Fixed = combineSelectedFindingIDs(split.Fixed, normalized)
 	}
 	e.waiting = false
 	e.waitingFindings = ""
@@ -692,10 +694,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			e.emitStepEvent(ipc.EventStepStarted, run, repo, gate.step.Name(), string(types.StepStatusRunning))
 		} else {
 			telemetry.Track("fix", e.fixTelemetryFields("user", gate.step.Name(), selectedFindingCount(gate.findings, response.findingIDs), 0))
-			selected := filterFindingsJSON(gate.findings, response.findingIDs)
-			merged := mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
-			selectedForPersistence := merged
-			outstandingFindings := gate.findings
+			selected, merged, outstandingFindings, selectedForPersistence := normalizeFixSelection(gate.findings, response, gate.step.Name() == types.StepReview)
 			selectedOutstandingIDs := gate.selectedOutstandingIDs
 			if gate.step.Name() == types.StepReview {
 				// APPEND-ONLY: mirror the live path (see the ActionFix case in
@@ -705,8 +704,6 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 				// gate.selectedOutstandingIDs would strand a newly selected
 				// finding without verification and could silently drop a
 				// remapped user-added finding from the outstanding set.
-				outstandingFindings = mergeOutstandingFindingsJSON(gate.findings, merged, nil)
-				selectedForPersistence = remapFindingIDsJSON(outstandingFindings, merged)
 				newSelectedIDs := combineSelectedFindingIDs(response.findingIDs, selectedForPersistence)
 				selectedOutstandingIDs = combineFindingIDLists(gate.selectedOutstandingIDs, newSelectedIDs)
 			}
@@ -1493,11 +1490,9 @@ rounds:
 				// round before it was an answer replay that suppressed one.
 				sctx.FinalizingAnswers = false
 				sctx.SkipFixExecution = false
-				selectedFindings := filterFindingsJSON(effectiveFindings, response.findingIDs)
-				mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
+				selectedFindings, mergedFindings, normalizedOutstanding, selectedForPersistence := normalizeFixSelection(effectiveFindings, response, carryFindings)
 				sctx.PreviousFindings = mergedFindings
 				sctx.DeferredFindings = removeMatchingFindingsJSON(effectiveFindings, selectedFindings)
-				selectedForPersistence := mergedFindings
 				if carryFindings {
 					// APPEND-ONLY: the selection is additionally handed to the fixer
 					// but is NOT subtracted from the outstanding set. It leaves only
@@ -1505,8 +1500,7 @@ rounds:
 					// approves, skips, or aborts this gate. Subtracting it here is the
 					// P1 that let a no-op fix complete a run with the defect
 					// unresolved.
-					outstandingFindings = mergeOutstandingFindingsJSON(effectiveFindings, mergedFindings, nil)
-					selectedForPersistence = remapFindingIDsJSON(outstandingFindings, mergedFindings)
+					outstandingFindings = normalizedOutstanding
 					newPendingIDs := combineSelectedFindingIDs(response.findingIDs, selectedForPersistence)
 					pendingVerificationIDs = combineFindingIDLists(pendingVerificationIDs, newPendingIDs)
 					selectedOutstandingIDs = combineFindingIDLists(selectedOutstandingIDs, newPendingIDs)
@@ -2350,4 +2344,15 @@ func (e *Executor) ReviewConversationAnswerDir(runID string) string {
 		return ""
 	}
 	return dir
+}
+
+func normalizeFixSelection(gate string, response approvalResponse, review bool) (selected, merged, outstanding, persisted string) {
+	selected = filterFindingsJSON(gate, response.findingIDs)
+	merged = mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
+	outstanding, persisted = gate, merged
+	if review {
+		outstanding = mergeOutstandingFindingsJSON(gate, merged, nil)
+		persisted = remapFindingIDsJSON(outstanding, merged)
+	}
+	return
 }
