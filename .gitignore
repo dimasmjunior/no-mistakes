@@ -45,6 +45,3 @@ demo_raw.gif
 
 # Worktree-local gh release used to pin the user-attachments upload contract.
 .scratch-gh/
-
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/graft/

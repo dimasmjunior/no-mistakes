@@ -97,6 +97,37 @@ nm() {
     "$BIN/no-mistakes" "$@"
 }
 
+cleanup() {
+  local status=$?
+  trap - EXIT
+  set +e
+  # The simulated run parks at the review gate on purpose, and a plain stop
+  # refuses while any run is active, so force it and then verify: this daemon is
+  # this simulation's own, and nothing else may be left running.
+  nm daemon stop --force >/dev/null 2>&1 || true
+  if [ -f "$NM_HOME/daemon.pid" ]; then
+    pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$NM_HOME/daemon.pid" | head -1)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      for _ in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.3
+      done
+    fi
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF "$NM_HOME"; then
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  if pgrep -f "$NM_HOME" >/dev/null 2>&1; then
+    echo "warning: a process still references the isolated home $NM_HOME" >&2
+  fi
+  echo
+  echo "(isolated daemon stopped; scratch project and logs left in $WORK)"
+  exit "$status"
+}
+trap cleanup EXIT
+
 # The scratch project: a deploy script with obvious, deterministic flaws.
 git init -q --bare --initial-branch=main "$WORK/origin.git"
 git init -q --initial-branch=main "$PROJECT"
@@ -320,31 +351,7 @@ else
   echo "block above the round-2 gate)."
 fi
 
-# The simulated run parks at the review gate on purpose, and a plain stop
-# refuses while any run is active, so force it and then verify: this daemon is
-# this simulation's own, and nothing else may be left running.
-nm daemon stop --force >/dev/null 2>&1 || true
-if [ -f "$NM_HOME/daemon.pid" ]; then
-  pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$NM_HOME/daemon.pid" | head -1)
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    for _ in 1 2 3 4 5; do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.3
-    done
-  fi
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF "$NM_HOME"; then
-    kill -TERM "$pid" 2>/dev/null || true
-    sleep 1
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-fi
-if pgrep -f "$NM_HOME" >/dev/null 2>&1; then
-  echo "warning: a process still references the isolated home $NM_HOME" >&2
-fi
-echo
-echo "(isolated daemon stopped; scratch project and logs left in $WORK)"
 
-# The fixture's own defect, if any, fails the run after its daemon is stopped.
 if [ -n "$fixture_defect" ]; then
   exit 1
 fi
