@@ -13,8 +13,8 @@ import (
 // immediately instead of two rounds later, when a reviewer reports the
 // contradiction.
 //
-// All three lists are in gate order, and each is empty when it recorded
-// nothing.
+// Gate findings retain gate order. Fixed also includes user-added findings
+// under the normalized IDs used for dispatch and persistence.
 type RespondDispositions struct {
 	// Fixed names the findings the response selected to fix.
 	Fixed []string
@@ -275,8 +275,8 @@ func findingIDsInPayloadOrder(raw string) []string {
 
 // parseGateFindingIDs is findingIDsInPayloadOrder plus whether the payload
 // could be decoded at all. An empty payload decodes to no findings; only a
-// malformed one reports false, and the caller must then skip validation
-// entirely rather than treat every ID as unknown.
+// malformed one reports false. Fix-response validation must refuse that
+// payload rather than treating it as an empty gate.
 func parseGateFindingIDs(raw string) ([]string, bool) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, true
