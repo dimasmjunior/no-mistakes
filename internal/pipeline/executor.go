@@ -234,17 +234,16 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		// gate cannot be resolved by anything else in this window, so the
 		// findings and rounds validated here are exactly the ones the response
 		// will be applied to. On refusal the gate stays parked.
-		var rounds []*db.StepRound
-		if e.db != nil && e.waitingStepResultID != "" {
-			loaded, err := e.db.GetRoundsByStep(e.waitingStepResultID)
-			if err != nil {
-				// The earlier decisions cannot be read, so nothing may be
-				// assumed decided: the caller must account for every finding
-				// it does not intend to fix.
-				rounds = nil
-			} else {
-				rounds = loaded
-			}
+		//
+		// Both halves of the contract fail closed: an unreadable gate payload
+		// (splitFixResponse) and an unreadable round history (here) refuse the
+		// response instead of degrading to "nothing was decided", because the
+		// earlier decisions are exactly what keeps an already-applied fix from
+		// being recorded as declined by omission.
+		rounds, refusal := e.roundsForFixValidation()
+		if refusal != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, refusal
 		}
 		split, err := splitFixResponse(e.waitingFindings, rounds, findingIDs, ignoreFindingIDs)
 		if err != nil {
@@ -260,6 +259,29 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 
 	e.approvalCh <- response
 	return dispositions, nil
+}
+
+// roundsForFixValidation loads this step's earlier rounds for a fix response's
+// validation. It fails closed for the same reason splitFixResponse refuses an
+// unreadable gate payload: a response validated without the earlier decisions
+// records an omission as a decline and can reverse an applied fix the history
+// should have protected. The caller holds e.mu, so the step result id read here
+// is the parked gate's.
+func (e *Executor) roundsForFixValidation() ([]*db.StepRound, *RespondRefusal) {
+	if e.db == nil || e.waitingStepResultID == "" {
+		return nil, &RespondRefusal{
+			Message: "this step's earlier decisions are unavailable, so the response was not recorded",
+			Help:    fixResponseUnreadableHelp,
+		}
+	}
+	rounds, err := e.db.GetRoundsByStep(e.waitingStepResultID)
+	if err != nil {
+		return nil, &RespondRefusal{
+			Message: fmt.Sprintf("this step's earlier decisions could not be read (%v), so the response was not recorded", err),
+			Help:    fixResponseUnreadableHelp,
+		}
+	}
+	return rounds, nil
 }
 
 // Execute runs the pipeline steps sequentially for a given run.

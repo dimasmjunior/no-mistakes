@@ -58,6 +58,12 @@ const fixResponseHelp = "List every finding the gate shows in --findings or --ig
 // finding an earlier round of the same step already chose to fix.
 const fixResponseRevertHelp = "Reverting an applied fix is out of scope for a gate response: leave those findings out of --ignore to keep the earlier decision, or list them in --findings to have the pipeline fix them again."
 
+// fixResponseUnreadableHelp is the refusal help for a fix response that cannot
+// be validated because the state it is validated against - the gate's findings
+// or this step's earlier rounds - could not be read. The refusal is fail
+// closed: the gate stays parked and nothing is recorded.
+const fixResponseUnreadableHelp = "The response was refused rather than validated against unreadable state, and the gate is still parked: inspect it with `no-mistakes axi status`, then retry, or approve or skip the step instead."
+
 // splitFixResponse validates a fix response against the gate that is parked
 // and splits it into the dispositions it will record.
 //
@@ -85,9 +91,12 @@ const fixResponseRevertHelp = "Reverting an applied fix is out of scope for a ga
 // (issue #790 decision B) minus the findings an earlier round chose to fix,
 // derived on read by declinedFindingLines.
 //
-// The gate's findings payload failing to parse leaves nothing to account for,
-// so the response passes: every other part of the pipeline degrades the same
-// way rather than blocking a gate on a malformed payload.
+// The validation fails closed on unreadable state: the contract a response is
+// checked against is the gate's own findings, so a payload that cannot be read
+// refuses the response rather than passing as a gate that showed nothing (the
+// same rule the executor applies to an unreadable round history). The gate
+// stays parked, and the refusal names the problem and points at the state to
+// inspect.
 func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingIDs, ignoreFindingIDs []string) (RespondDispositions, error) {
 	gate, gateParsed := parseGateFindingIDs(gateFindingsJSON)
 	inGate := make(map[string]bool, len(gate))
@@ -98,13 +107,16 @@ func splitFixResponse(gateFindingsJSON string, rounds []*db.StepRound, findingID
 	fixed := uniqueNonEmpty(findingIDs)
 	ignored := uniqueNonEmpty(ignoreFindingIDs)
 
-	// A payload this cannot decode shows no findings to account for and no
-	// earlier decision to protect, so the response is accepted and its
-	// explicit declines are recorded as sent. Refusing would strand the gate
-	// behind approving or skipping a step whose findings nobody can read,
-	// and nothing downstream can act on a payload this cannot parse anyway.
+	// An unreadable payload is refused: without the gate's findings there is no
+	// way to tell whether every finding was accounted for, and accepting the
+	// response would record its omissions as declines off state this code
+	// could not read. The gate stays parked, so the operator can inspect it or
+	// approve/skip the step instead.
 	if !gateParsed {
-		return RespondDispositions{Fixed: fixed, Ignored: ignored}, nil
+		return RespondDispositions{}, &RespondRefusal{
+			Message: "the gate's findings could not be read, so the response was not recorded",
+			Help:    fixResponseUnreadableHelp,
+		}
 	}
 	if unknown := idsOutside(fixed, inGate); len(unknown) > 0 {
 		return RespondDispositions{}, &RespondRefusal{

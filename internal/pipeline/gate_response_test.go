@@ -171,12 +171,25 @@ func TestSplitFixResponse_DispositionsAreInGateOrder(t *testing.T) {
 	}
 }
 
-// A findings payload this cannot parse leaves nothing to account for, matching
-// how the rest of the pipeline degrades on a malformed payload instead of
-// blocking the gate forever.
-func TestSplitFixResponse_UnparseableGateLeavesNothingToAccountFor(t *testing.T) {
-	if _, err := splitFixResponse("{not json", nil, []string{"R1"}, nil); err != nil {
-		t.Fatalf("err = %v, want the response accepted with nothing to account for", err)
+// Readability is part of the guarantee: the gate's findings are the contract a
+// fix response is validated against, so a payload this cannot read refuses the
+// response (fail closed) rather than passing as a gate that showed nothing.
+func TestSplitFixResponse_UnreadableGateRefusesTheResponse(t *testing.T) {
+	_, err := splitFixResponse("{not json", nil, []string{"R1"}, nil)
+
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a RespondRefusal", err)
+	}
+	if !strings.Contains(refusal.Message, "could not be read") {
+		t.Fatalf("message = %q, want the unreadable payload named", refusal.Message)
+	}
+	if !strings.Contains(refusal.Help, "still parked") {
+		t.Fatalf("help = %q, want the parked-gate next action", refusal.Help)
+	}
+	// Nothing is recorded from a refused response, not even the ids it sent.
+	if len(refusal.Missing) != 0 || len(refusal.DeclinedEarlierFix) != 0 {
+		t.Fatalf("refusal = %+v, want no derived decision sets", refusal)
 	}
 }
 
@@ -223,6 +236,69 @@ func TestExecutor_FixResponseRefusalLeavesTheGateParked(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitExecutorDone(t, done)
+}
+
+// The round history is the other half of the contract: when the earlier
+// decisions cannot be established at all - here a parked gate with no step
+// result id - the response is refused instead of being validated against none
+// of them, and the gate stays parked so the caller can retry.
+func TestExecutor_FixResponseRefusedWhenEarlierDecisionsAreUnavailable(t *testing.T) {
+	exec, database, run, _, done := respondFixStepFindings(t)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, %v", steps, err)
+	}
+
+	exec.mu.Lock()
+	parkedID := exec.waitingStepResultID
+	exec.waitingStepResultID = ""
+	exec.mu.Unlock()
+	if parkedID != steps[0].ID {
+		t.Fatalf("parked step result id = %q, want %q", parkedID, steps[0].ID)
+	}
+
+	_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1", "R2", "R3"}, nil, nil, nil, "")
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if !strings.Contains(refusal.Message, "earlier decisions are unavailable") {
+		t.Fatalf("message = %q, want the unavailable history named", refusal.Message)
+	}
+
+	// Restoring the parked id lets the same response through, which is the
+	// proof the refusal never resolved the gate.
+	exec.mu.Lock()
+	exec.waitingStepResultID = parkedID
+	exec.mu.Unlock()
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1", "R2", "R3"}, nil, nil, nil, ""); err != nil {
+		t.Fatalf("corrected response refused: %v", err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitExecutorDone(t, done)
+}
+
+// A failed read of the round history refuses the response the same way and
+// names the read failure; the parked executor is then cancelled by cleanup,
+// since a gate that cannot be validated against its history cannot be answered
+// with a fix response at all.
+func TestExecutor_FixResponseRefusedWhenTheRoundReadFails(t *testing.T) {
+	exec, database, _, _, _ := respondFixStepFindings(t)
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1", "R2", "R3"}, nil, nil, nil, "")
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if !strings.Contains(refusal.Message, "could not be read") {
+		t.Fatalf("message = %q, want the read failure named", refusal.Message)
+	}
 }
 
 // An omission of a finding an earlier round of the same step already decided is
