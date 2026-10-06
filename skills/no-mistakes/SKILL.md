@@ -222,7 +222,7 @@ Run the pipeline and decide on its findings as they come up:
    finding that round chose to fix cannot be declined by a later response at
    all: reverting an applied fix is out of scope for a gate response, so list
    it in `--findings` to fix it again or leave it out to keep it. Every
-   successful `respond` echoes what it recorded in a `recorded:` object
+   successful `fix` response echoes what it recorded in a `recorded:` object
    (`fixed`, `ignored`, `kept`), so read it to confirm the decision
    you actually made.
    While a run is active, never fix findings by editing the code yourself -
@@ -372,6 +372,11 @@ or skip it. Approval is rejected. Have the operator inspect and resolve the
 reported edit, then send `--action fix` to retry the unfinished step.
 The [protected-path reference](https://kunchenguid.github.io/no-mistakes/reference/repo-config/#protected_paths)
 owns the staging guard's scope and limitations.
+
+A gate holding open `question-<id>` findings is not eligible either: a question
+is settled by `axi answer`, never by a verdict, so `--yes` stands aside
+there - as it does when the question history cannot be read end to end, which
+also parks for a human.
 
 A `test-agent-unvalidated-work` finding means a timed-out Test agent left
 commits or changes no Test turn validated. Approval is rejected, so `--yes`
