@@ -42,6 +42,12 @@ type approvalResponse struct {
 	instructions   map[string]string
 	addedFindings  []types.Finding
 	approvalReason string
+	// ignoreFindingIDs is the validated decline list of a fix response. It is
+	// not dispatch input (the decline set is derived from the selection on
+	// read), but an accepted response that selects nothing still has to be
+	// recorded as a decision: without the list the executor cannot tell an
+	// explicit all-ignored response from a gate with nothing to decide.
+	ignoreFindingIDs []string
 }
 
 // Executor runs pipeline steps sequentially and coordinates approval interactions.
@@ -251,6 +257,13 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			return RespondDispositions{}, err
 		}
 		dispositions = split
+		// Dispatch and persistence must use the same ids the validation
+		// accepted. splitFixResponse trims ids and matches them against the
+		// gate, so a padded "--findings ' R1 '" would otherwise pass here and
+		// then match no finding downstream: the fixer would receive nothing and
+		// the round would record the real finding as declined.
+		response.findingIDs = split.Fixed
+		response.ignoreFindingIDs = split.Ignored
 		_, _, _, normalized := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
 		dispositions.Fixed = combineSelectedFindingIDs(split.Fixed, normalized)
 	}
@@ -1673,7 +1686,17 @@ func (e *Executor) recordFixDecision(roundID string, response approvalResponse, 
 	allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, selectedForPersistence)
 	idsJSON := marshalFindingIDs(allSelectedIDs)
 	if idsJSON == "" {
-		// Nothing was selected, so there is no decision to record.
+		if len(response.ignoreFindingIDs) > 0 {
+			// An accepted response that declined findings and selected none is
+			// a decision, and the derivation reads it as the explicit empty
+			// selection. Recording nothing would leave the complement saying
+			// nothing, so later gates would show the declined findings as
+			// undecided and ask for them again.
+			if dbErr := e.db.SetStepRoundDeclined(roundID); dbErr != nil {
+				slog.Warn("failed to record an all-ignored fix response", "round", roundID, "error", dbErr)
+			}
+		}
+		// Nothing was selected, so there is no selection to record.
 		return
 	}
 	var userFindingsJSON *string

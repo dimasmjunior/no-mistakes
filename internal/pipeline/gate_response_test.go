@@ -301,6 +301,146 @@ func TestExecutor_FixResponseRefusedWhenTheRoundReadFails(t *testing.T) {
 	}
 }
 
+// An accepted fix response that declines every finding and selects none is a
+// decision, not an empty round: without the declined marker its declines would
+// be unrecorded, the derived decline set (the selection's complement) would be
+// empty, and the next gate would show the same findings as undecided.
+func TestExecutor_AllIgnoredFixResponseRecordsTheDeclines(t *testing.T) {
+	exec, database, run, _, done := respondFixStepFindings(t)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, %v", steps, err)
+	}
+
+	// The decision is written after the gate loop consumes the response, so the
+	// round is waited for rather than assumed.
+	declinedRound := func() *db.StepRound {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		var last []*db.StepRound
+		for time.Now().Before(deadline) {
+			rounds, err := database.GetRoundsByStep(steps[0].ID)
+			if err == nil {
+				last = rounds
+				for _, round := range rounds {
+					if round.SelectionSource != nil && *round.SelectionSource == db.RoundSelectionSourceUserDeclined {
+						return round
+					}
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("no declined round was recorded; rounds = %+v", last)
+		return nil
+	}
+
+	dispositions, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, []string{"R1", "R2", "R3"}, nil, nil, "")
+	if err != nil {
+		t.Fatalf("declining every finding must be accepted: %v", err)
+	}
+	if len(dispositions.Fixed) != 0 || strings.Join(dispositions.Ignored, ",") != "R1,R2,R3" {
+		t.Fatalf("dispositions = %+v, want nothing fixed and R1,R2,R3 ignored", dispositions)
+	}
+
+	round := declinedRound()
+	recorded := ""
+	if round.SelectedFindingIDs != nil {
+		recorded = *round.SelectedFindingIDs
+	}
+	if recorded != db.DeclinedSelectionJSON {
+		t.Fatalf("declined round selection = %q, want the explicit empty selection %q", recorded, db.DeclinedSelectionJSON)
+	}
+
+	// The record is what a later gate reads as an earlier decision, so the same
+	// three findings may now be omitted: the response is accepted and keeps
+	// them. Without the record it would be refused as unaccounted.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		kept, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, nil, nil, nil, nil, "")
+		if err == nil {
+			if strings.Join(kept.Kept, ",") != "R1,R2,R3" {
+				t.Fatalf("kept = %v, want [R1 R2 R3]", kept.Kept)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a response omitting the declined findings was never accepted: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// End the run: the fix round after the last response re-parks, possibly
+	// after this point, so approve once the gate is there.
+	approvalDeadline := time.Now().Add(5 * time.Second)
+	for {
+		err := exec.Respond(types.StepReview, types.ActionApprove, nil)
+		if err == nil {
+			break
+		}
+		if time.Now().After(approvalDeadline) {
+			t.Fatalf("gate never accepted approval: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitExecutorDone(t, done)
+}
+
+// A padded id must not pass validation as R1 and then match nothing: the ids
+// the validation accepted are the ones dispatched to the fixer and recorded on
+// the round, so the real finding is never left looking declined.
+func TestExecutor_FixResponseNormalizesIDsBeforeDispatchAndPersistence(t *testing.T) {
+	exec, database, run, _, done := respondFixStepFindings(t)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, %v", steps, err)
+	}
+
+	dispositions, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"  R1  "}, []string{" R2 ", "\tR3"}, nil, nil, "")
+	if err != nil {
+		t.Fatalf("a padded selection must be accepted: %v", err)
+	}
+	if strings.Join(dispositions.Fixed, ",") != "R1" || strings.Join(dispositions.Ignored, ",") != "R2,R3" {
+		t.Fatalf("dispositions = %+v, want fixed=[R1] ignored=[R2,R3]", dispositions)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		recorded := []string(nil)
+		found := false
+		if rounds, err := database.GetRoundsByStep(steps[0].ID); err == nil {
+			for _, round := range rounds {
+				if round.SelectionSource == nil || *round.SelectionSource != db.RoundSelectionSourceUser {
+					continue
+				}
+				recorded = selectedIDsOf(t, round)
+				found = true
+			}
+		}
+		if found {
+			if strings.Join(recorded, ",") != "R1" {
+				t.Fatalf("recorded selection = %v, want [R1]: the padded id must not survive into the record", recorded)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no fix decision was recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// End the run: the fix round re-parks, possibly after this point.
+	approvalDeadline := time.Now().Add(5 * time.Second)
+	for {
+		err := exec.Respond(types.StepReview, types.ActionApprove, nil)
+		if err == nil {
+			break
+		}
+		if time.Now().After(approvalDeadline) {
+			t.Fatalf("gate never accepted approval: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitExecutorDone(t, done)
+}
+
 // An omission of a finding an earlier round of the same step already decided is
 // kept, never re-declined, and a later --ignore naming an earlier fix is
 // refused: the gate stays parked and the caller corrects the response.

@@ -10,7 +10,8 @@ const (
 	RoundSelectionSourceAutoFix = "auto_fix"
 	// RoundSelectionSourceUserDeclined records that a human resolved the
 	// round's approval gate without selecting any finding to fix: approve,
-	// skip, or abort. Before this existed, those three resolutions wrote no
+	// skip, or abort, or a fix response that declined every finding the gate
+	// showed (--ignore with no --findings). Before this existed, those three resolutions wrote no
 	// finding-level state at all, so "the human declined every finding" and
 	// "there were no findings" were the same row and no later step or run
 	// could tell them apart. The decline itself is still stored the way a
