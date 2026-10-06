@@ -17,18 +17,18 @@ run: running
   review: running
   review: awaiting_approval
 run:
-  id: "01M4976B363S5GKGQ23WPW0A4E"
+  id: "01M49EWE004RYVJ9MA9230N0FG"
   branch: harden-deploy
   status: running
   awaiting_agent: parked 0s
-  head: 5fcbb9e5
-  head_sha: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
+  head: 51d31b82
+  head_sha: 51d31b82555f85cf5b36d819c0d21c243c8daed8
   verification_plan: none
   findings: "3 awaiting, 2 auto-fix"
   steps[9]{step,status,findings,duration_ms}:
-    intent,completed,0,13
-    rebase,completed,0,88
-    review,awaiting_approval,5,78
+    intent,completed,0,15
+    rebase,completed,0,105
+    review,awaiting_approval,5,99
     test,pending,0,0
     document,pending,0,0
     lint,pending,0,0
@@ -40,14 +40,14 @@ branch_sync:
   changed: false
   local:
     branch: harden-deploy
-    head: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
+    head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
     clean: true
   pipeline:
-    run: "01M4976B363S5GKGQ23WPW0A4E"
+    run: "01M49EWE004RYVJ9MA9230N0FG"
     status: running
     phase: pre_push
-    submitted_head: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
-    current_head: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
+    submitted_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    current_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
     pushed_head: ""
     pushed_at: 0
     push_generation: 0
@@ -88,18 +88,18 @@ run: running
   review: fixing
   review: fix_review
 run:
-  id: "01M4976B363S5GKGQ23WPW0A4E"
+  id: "01M49EWE004RYVJ9MA9230N0FG"
   branch: harden-deploy
   status: running
   awaiting_agent: parked 0s
-  head: 20fa95ac
-  head_sha: 20fa95aca5e9306b296fd11d73dfbeed9aeefa14
+  head: d3620faf
+  head_sha: d3620fafa026f577399e002e1c856770a4ac753b
   verification_plan: none
   findings: "4 awaiting, 3 auto-fix"
   steps[9]{step,status,findings,duration_ms}:
-    intent,completed,0,13
-    rebase,completed,0,88
-    review,fix_review,7,269
+    intent,completed,0,15
+    rebase,completed,0,105
+    review,fix_review,7,325
     test,pending,0,0
     document,pending,0,0
     lint,pending,0,0
@@ -111,14 +111,14 @@ branch_sync:
   changed: false
   local:
     branch: harden-deploy
-    head: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
+    head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
     clean: true
   pipeline:
-    run: "01M4976B363S5GKGQ23WPW0A4E"
+    run: "01M49EWE004RYVJ9MA9230N0FG"
     status: running
     phase: pre_push
-    submitted_head: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
-    current_head: 20fa95aca5e9306b296fd11d73dfbeed9aeefa14
+    submitted_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    current_head: d3620fafa026f577399e002e1c856770a4ac753b
     pushed_head: ""
     pushed_at: 0
     push_generation: 0
@@ -163,18 +163,18 @@ run: running
   review: fixing
   review: fix_review
 run:
-  id: "01M4976B363S5GKGQ23WPW0A4E"
+  id: "01M49EWE004RYVJ9MA9230N0FG"
   branch: harden-deploy
   status: running
   awaiting_agent: parked 0s
-  head: 20fa95ac
-  head_sha: 20fa95aca5e9306b296fd11d73dfbeed9aeefa14
+  head: d3620faf
+  head_sha: d3620fafa026f577399e002e1c856770a4ac753b
   verification_plan: none
   findings: "4 awaiting, 3 auto-fix"
   steps[9]{step,status,findings,duration_ms}:
-    intent,completed,0,13
-    rebase,completed,0,88
-    review,fix_review,7,421
+    intent,completed,0,15
+    rebase,completed,0,105
+    review,fix_review,7,529
     test,pending,0,0
     document,pending,0,0
     lint,pending,0,0
@@ -186,14 +186,14 @@ branch_sync:
   changed: false
   local:
     branch: harden-deploy
-    head: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
+    head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
     clean: true
   pipeline:
-    run: "01M4976B363S5GKGQ23WPW0A4E"
+    run: "01M49EWE004RYVJ9MA9230N0FG"
     status: running
     phase: pre_push
-    submitted_head: 5fcbb9e5db3eb0fa2507cb5641d6def701d937b2
-    current_head: 20fa95aca5e9306b296fd11d73dfbeed9aeefa14
+    submitted_head: 51d31b82555f85cf5b36d819c0d21c243c8daed8
+    current_head: d3620fafa026f577399e002e1c856770a4ac753b
     pushed_head: ""
     pushed_at: 0
     push_generation: 0
@@ -229,6 +229,13 @@ gate:
     r7,warning,deploy.sh,auto-fix,"cleanup never runs when the deploy fails, leaving the staging directory behind"
 help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the complete step summary and log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
 
+## What the fixer actually applied
+
+files the pipeline's fix rounds changed:
+  deploy.sh
+  snapshot.sh
+every file the fixes claim (deploy.sh, snapshot.sh) really changed
+
 ## What the next review turn was told about round 2
 
 the section's own instructions to the reviewer:
@@ -244,21 +251,21 @@ round 2's block:
   fix_summary: "changes applied"
   findings:
     - {"id":"r1","severity":"error","file":"deploy.sh","line":3,"description":"the allow-dirty bypass lets a dirty working tree ship uncommitted files","action":"ask-user"}
-    - {"id":"r2","severity":"warning","file":"deploy.sh","line":2,"description":"set -u is missing so an unset TAG expands to an empty value","action":"ask-user"}
-    - {"id":"r3","severity":"warning","file":"deploy.sh","line":6,"description":"the compose heredoc expands variables because its delimiter is unquoted","action":"auto-fix"}
+    - {"id":"r2","severity":"warning","file":"deploy.sh","line":1,"description":"set -u is missing so an unset TAG expands to an empty value","action":"ask-user"}
+    - {"id":"r3","severity":"warning","file":"deploy.sh","line":5,"description":"the compose heredoc expands variables because its delimiter is unquoted","action":"auto-fix"}
     - {"id":"r4","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository and committed with git add","action":"ask-user"}
-    - {"id":"r5","severity":"warning","file":"deploy.sh","line":9,"description":"the health check exit status is ignored so a failed deploy reports success","action":"auto-fix"}
-    - {"id":"r6","severity":"error","file":"snapshot.sh","line":12,"description":"the snapshot tarball is written into the repository root instead of the artifacts directory","action":"ask-user"}
-    - {"id":"r7","severity":"warning","file":"deploy.sh","line":48,"description":"cleanup never runs when the deploy fails, leaving the staging directory behind","action":"auto-fix"}
+    - {"id":"r5","severity":"warning","file":"deploy.sh","line":8,"description":"the health check exit status is ignored so a failed deploy reports success","action":"auto-fix"}
+    - {"id":"r6","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository root instead of the artifacts directory","action":"ask-user"}
+    - {"id":"r7","severity":"warning","file":"deploy.sh","line":9,"description":"cleanup never runs when the deploy fails, leaving the staging directory behind","action":"auto-fix"}
   user_chose_to_fix:
-    - {"id":"r6","severity":"error","file":"snapshot.sh","line":12,"description":"the snapshot tarball is written into the repository root instead of the artifacts directory","action":"ask-user"}
-    - {"id":"r7","severity":"warning","file":"deploy.sh","line":48,"description":"cleanup never runs when the deploy fails, leaving the staging directory behind","action":"auto-fix"}
+    - {"id":"r6","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository root instead of the artifacts directory","action":"ask-user"}
+    - {"id":"r7","severity":"warning","file":"deploy.sh","line":9,"description":"cleanup never runs when the deploy fails, leaving the staging directory behind","action":"auto-fix"}
   user_chose_to_ignore:
     - {"id":"r1","severity":"error","file":"deploy.sh","line":3,"description":"the allow-dirty bypass lets a dirty working tree ship uncommitted files","action":"ask-user"}
-    - {"id":"r2","severity":"warning","file":"deploy.sh","line":2,"description":"set -u is missing so an unset TAG expands to an empty value","action":"ask-user"}
-    - {"id":"r3","severity":"warning","file":"deploy.sh","line":6,"description":"the compose heredoc expands variables because its delimiter is unquoted","action":"auto-fix"}
+    - {"id":"r2","severity":"warning","file":"deploy.sh","line":1,"description":"set -u is missing so an unset TAG expands to an empty value","action":"ask-user"}
+    - {"id":"r3","severity":"warning","file":"deploy.sh","line":5,"description":"the compose heredoc expands variables because its delimiter is unquoted","action":"auto-fix"}
     - {"id":"r4","severity":"error","file":"snapshot.sh","line":3,"description":"the snapshot tarball is written into the repository and committed with git add","action":"ask-user"}
-    - {"id":"r5","severity":"warning","file":"deploy.sh","line":9,"description":"the health check exit status is ignored so a failed deploy reports success","action":"auto-fix"}
+    - {"id":"r5","severity":"warning","file":"deploy.sh","line":8,"description":"the health check exit status is ignored so a failed deploy reports success","action":"auto-fix"}
 
 ## Verdict
 
