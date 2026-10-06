@@ -149,14 +149,14 @@ actions:
         - id: r6
           severity: error
           file: snapshot.sh
-          line: 12
+          line: 3
           description: the snapshot tarball is written into the repository root instead of the artifacts directory
           action: ask-user
           review_scope: source
         - id: r7
           severity: warning
           file: deploy.sh
-          line: 48
+          line: 9
           description: cleanup never runs when the deploy fails, leaving the staging directory behind
           action: auto-fix
           review_scope: source
@@ -176,6 +176,12 @@ actions:
           printf 'image: example-service:%s\n' "$TAG" > compose.yaml
           curl -fsS "https://example.invalid/healthz"
           echo "deployed ${TAG}"
+      - path: snapshot.sh
+        new: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p artifacts
+          tar -czf artifacts/snapshot.tar.gz /srv/app
     structured:
       findings: []
       summary: applied the selected fixes
@@ -192,14 +198,14 @@ actions:
         - id: r2
           severity: warning
           file: deploy.sh
-          line: 2
+          line: 1
           description: set -u is missing so an unset TAG expands to an empty value
           action: ask-user
           review_scope: source
         - id: r3
           severity: warning
           file: deploy.sh
-          line: 6
+          line: 5
           description: the compose heredoc expands variables because its delimiter is unquoted
           action: auto-fix
           review_scope: source
@@ -213,7 +219,7 @@ actions:
         - id: r5
           severity: warning
           file: deploy.sh
-          line: 9
+          line: 8
           description: the health check exit status is ignored so a failed deploy reports success
           action: auto-fix
           review_scope: source
@@ -231,6 +237,9 @@ EOF
 
 echo "## Round 1: run the pipeline, then ask for every finding"
 echo
+# The submitted head, so the fix commits can be told apart from the branch's own
+# content when the script verifies what the fixer actually applied.
+SUBMITTED=$(git -C "$PROJECT" rev-parse HEAD)
 nm axi run --intent "Harden the deploy script: ship only committed files, fail loudly on a bad environment, and keep release artifacts out of the repository" --wait 3m
 echo
 echo "\$ no-mistakes axi respond --action fix --findings r1,r2,r3,r4,r5"
@@ -241,6 +250,38 @@ echo "## Round 2: ask for only the two new findings"
 echo
 echo "\$ no-mistakes axi respond --action fix --findings r6,r7"
 nm axi respond --action fix --findings r6,r7 --wait 3m
+echo
+
+echo "## What the fixer actually applied"
+echo
+# The scenario's fixer claims findings in deploy.sh and snapshot.sh, and the
+# gate then reports them as chosen for fix. A claim that is not applied would
+# make the run's accounting look better than the code, so assert that every file
+# the fixes claim really changed between the submitted head and the run's head.
+# The run's worktree is $NM_HOME/worktrees/<repo>/<run> and its `.git` is a file,
+# so the first `.git` under that tree marks the checkout to inspect. A defect is
+# recorded rather than exited on, so the script still stops its own daemon.
+worktree=$(find "$NM_HOME/worktrees" -maxdepth 3 -name .git 2>/dev/null | head -1 | xargs -r dirname)
+fixture_defect=""
+if [ -z "$worktree" ]; then
+  fixture_defect="no run worktree under $NM_HOME/worktrees; cannot verify the applied fixes"
+else
+  changed=$(git -C "$worktree" diff --name-only "$SUBMITTED"..HEAD 2>/dev/null | sort)
+  echo "files the pipeline's fix rounds changed:"
+  printf '%s\n' "$changed" | sed 's/^/  /'
+  missing=""
+  for file in deploy.sh snapshot.sh; do
+    printf '%s\n' "$changed" | grep -qx "$file" || missing="$missing $file"
+  done
+  if [ -n "$missing" ]; then
+    fixture_defect="the fixes claim files that never changed:$missing"
+  else
+    echo "every file the fixes claim (deploy.sh, snapshot.sh) really changed"
+  fi
+fi
+if [ -n "$fixture_defect" ]; then
+  echo "FIXTURE DEFECT: $fixture_defect" >&2
+fi
 echo
 
 echo "## What the next review turn was told about round 2"
@@ -302,3 +343,8 @@ if pgrep -f "$NM_HOME" >/dev/null 2>&1; then
 fi
 echo
 echo "(isolated daemon stopped; scratch project and logs left in $WORK)"
+
+# The fixture's own defect, if any, fails the run after its daemon is stopped.
+if [ -n "$fixture_defect" ]; then
+  exit 1
+fi

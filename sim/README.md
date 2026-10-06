@@ -30,6 +30,17 @@ kept here:
 - `repro-transcript-after.txt` - the run with this change, where the same response keeps them and
   reports them under `kept`.
 
+## What the fixture does and does not show
+
+- The review turns are scripted: the findings, their IDs, severities and line numbers come from the
+  scenario file rather than a real reviewer. The line numbers name lines of the fixture's own files,
+  and the fixer applies the edits it claims in both `deploy.sh` and `snapshot.sh`; the script asserts
+  that every claimed file really changed, so a claim that is not applied fails the run instead of
+  making the accounting look better than the code.
+- What it demonstrates end to end is the decline rendering: the same response, the same pipeline, and
+  the difference is only in how the omitted findings are recorded and rendered to the next review
+  turn.
+
 ## Isolation
 
 - Its own `HOME` and its own `NM_HOME` under the output directory: the daemon, socket, database,
