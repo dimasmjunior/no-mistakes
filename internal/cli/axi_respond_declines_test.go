@@ -154,3 +154,43 @@ func TestAxiRespond_IgnoreIsRejectedForOtherActions(t *testing.T) {
 		t.Fatal("an invalid --ignore still reached the daemon")
 	}
 }
+
+// An ignore-only fix response is valid: the operator may be keeping earlier
+// decisions and declining only what this gate added, which is not the same as
+// approving the gate. The CLI must forward it rather than failing its own
+// precondition before the daemon ever sees it.
+func TestAxiRespond_ForwardsAnIgnoreOnlyFixResponse(t *testing.T) {
+	var gotParams ipc.RespondParams
+	var responded atomic.Bool
+	fx := newAxiTimeoutFixture(t, axiTimeoutOpts{
+		respond: func(_ context.Context, raw json.RawMessage) (interface{}, error) {
+			if err := json.Unmarshal(raw, &gotParams); err != nil {
+				return nil, err
+			}
+			responded.Store(true)
+			return &ipc.RespondResult{OK: true, Ignored: []string{"R2"}}, nil
+		},
+	})
+	fx.setGetRun(func(context.Context, int) (*ipc.RunInfo, error) {
+		if responded.Load() {
+			return fx.completed(), nil
+		}
+		return fx.awaiting(), nil
+	})
+
+	out, err := executeCmd("axi", "respond", "--action", "fix", "--ignore", "R2", "--wait", "3s")
+	if err != nil {
+		t.Fatalf("an ignore-only fix response must be accepted: %v\n%s", err, out)
+	}
+	if len(gotParams.FindingIDs) != 0 {
+		t.Fatalf("forwarded findings = %v, want none", gotParams.FindingIDs)
+	}
+	if strings.Join(gotParams.IgnoreFindingIDs, ",") != "R2" {
+		t.Fatalf("forwarded ignores = %v, want [R2]", gotParams.IgnoreFindingIDs)
+	}
+	for _, want := range []string{"recorded:", "ignored", "R2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("respond output missing %q:\n%s", want, out)
+		}
+	}
+}

@@ -209,9 +209,50 @@ git add snapshot.tar.gz
 
 	// The echo reports the dispositions the response recorded: r6 and r7 fixed,
 	// the carried r1-r5 kept rather than declined.
-	if !strings.Contains(round3, "kept") || !strings.Contains(round3, "r1") {
-		t.Fatalf("round 2 response echo does not report the kept round-1 fixes:\n%s", round3)
+	// The recorded: block is the evidence: the gate table above it also names r1,
+	// so a bare substring search would pass without the disposition being
+	// reported at all.
+	echo := recordedDispositionsBlock(round3)
+	if echo == "" {
+		t.Fatalf("round 2 response has no recorded: block:\n%s", round3)
+	}
+	kept := ""
+	for _, line := range strings.Split(echo, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "kept") {
+			kept = line
+			break
+		}
+	}
+	for _, id := range []string{"r1", "r5"} {
+		if !strings.Contains(kept, id) {
+			t.Fatalf("recorded kept line %q does not report the carried %s:\n%s", kept, id, round3)
+		}
 	}
 
 	t.Logf("journey: %d agent turns; the round-2 gate carried r1-r5 and the partial response kept them", len(h.AgentInvocations()))
+}
+
+// recordedDispositionsBlock returns the echo's recorded: section - the part of
+// the output that reports what the response actually recorded - so an assertion
+// cannot be satisfied by the gate table printed above it.
+func recordedDispositionsBlock(out string) string {
+	lines := strings.Split(out, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "recorded:") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, line := range lines[start:] {
+		if line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "recorded:") {
+			break
+		}
+		b.WriteString(line + "\n")
+	}
+	return b.String()
 }

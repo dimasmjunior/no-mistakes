@@ -388,7 +388,22 @@ func TestExecutor_AllIgnoredFixResponseRecordsTheDeclines(t *testing.T) {
 // the validation accepted are the ones dispatched to the fixer and recorded on
 // the round, so the real finding is never left looking declined.
 func TestExecutor_FixResponseNormalizesIDsBeforeDispatchAndPersistence(t *testing.T) {
-	exec, database, run, _, done := respondFixStepFindings(t)
+	contexts := make(chan *StepContext, 4)
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			select {
+			case contexts <- sctx:
+			default:
+			}
+			return &StepOutcome{NeedsApproval: true, Findings: gateFindingsThree}, nil
+		},
+	}
+	database, p, run, repo := setupTest(t)
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	<-contexts // the parking round
 	steps, err := database.GetStepsByRun(run.ID)
 	if err != nil || len(steps) != 1 {
 		t.Fatalf("steps = %+v, %v", steps, err)
@@ -426,6 +441,26 @@ func TestExecutor_FixResponseNormalizesIDsBeforeDispatchAndPersistence(t *testin
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// The fixer's own input carries the validated id too: the dispatch and the
+	// record must be the same list, or the padding would be undone on one side
+	// only.
+	seen := false
+	dispatchDeadline := time.Now().Add(5 * time.Second)
+	for !seen {
+		select {
+		case sctx := <-contexts:
+			if !strings.Contains(string(sctx.PreviousFindings), `"id":"R1"`) {
+				t.Fatalf("fixer input = %s, want the validated id R1", string(sctx.PreviousFindings))
+			}
+			seen = true
+		default:
+			if time.Now().After(dispatchDeadline) {
+				t.Fatal("the fix round never ran")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
 	// End the run: the fix round re-parks, possibly after this point.
 	approvalDeadline := time.Now().Add(5 * time.Second)
 	for {
@@ -731,6 +766,13 @@ func TestExecutor_DispositionEchoIncludesNormalizedAdditions(t *testing.T) {
 			exec.waitingStepResultID = sr.ID
 			exec.waitingFindings = gate
 			exec.approvalCh = make(chan approvalResponse, 1)
+			// A real park always has its round: the response records its
+			// decision against it before the caller is told anything.
+			round, err := database.InsertStepRound(sr.ID, 1, "initial", &gate, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec.waitingRoundID = round.ID
 			var ignored []string
 			if strings.Contains(gate, "existing") {
 				ignored = []string{"user-1"}
@@ -748,11 +790,9 @@ func TestExecutor_DispositionEchoIncludesNormalizedAdditions(t *testing.T) {
 			}
 			response := <-exec.approvalCh
 			selected, merged, _, persisted := normalizeFixSelection(gate, response, true)
-			round, err := database.InsertStepRound(sr.ID, 1, "initial", &gate, nil, 0)
-			if err != nil {
-				t.Fatal(err)
+			if err := exec.recordFixDecision(round.ID, response, persisted, selected, merged); err != nil {
+				t.Fatalf("recordFixDecision: %v", err)
 			}
-			exec.recordFixDecision(round.ID, response, persisted, selected, merged)
 			rounds, err := database.GetRoundsByStep(sr.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -762,4 +802,178 @@ func TestExecutor_DispositionEchoIncludesNormalizedAdditions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A user-added finding must not take the ID of a gate finding this response
+// declined - outside Review too. The added finding is a separate concern, so it
+// is allocated a fresh ID: the decline stays attributed to the real finding,
+// and the fixer's input carries the added concern rather than the declined one.
+func TestExecutor_AddedFindingCannotTakeADeclinedGateFindingID(t *testing.T) {
+	const gateFindings = `{"findings":[` +
+		`{"id":"lint-1","severity":"warning","description":"keep selected","action":"auto-fix"},` +
+		`{"id":"lint-2","severity":"warning","description":"explicitly declined defect","action":"ask-user"}],` +
+		`"summary":"two findings"}`
+
+	contexts := make(chan *StepContext, 4)
+	step := &adaptiveCallStep{
+		name: types.StepLint,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			select {
+			case contexts <- sctx:
+			default:
+			}
+			return &StepOutcome{NeedsApproval: true, Findings: gateFindings}, nil
+		},
+	}
+	database, p, run, repo := setupTest(t)
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done, _ := startExecutor(t, exec, run, repo, t.TempDir())
+	waitForStepStatus(t, database, run.ID, types.StepLint, types.StepStatusAwaitingApproval)
+	<-contexts // the parking round
+
+	added := []types.Finding{{ID: "lint-2", Severity: "warning", Description: "independent user-added fix"}}
+	dispositions, err := exec.RespondWithOverrides(types.StepLint, types.ActionFix, []string{"lint-1"}, []string{"lint-2"}, nil, added, "")
+	if err != nil {
+		t.Fatalf("response refused: %v", err)
+	}
+	if strings.Join(dispositions.Ignored, ",") != "lint-2" {
+		t.Fatalf("ignored = %v, want [lint-2]", dispositions.Ignored)
+	}
+	if strings.Join(dispositions.Fixed, ",") != "lint-1,user-1" {
+		t.Fatalf("fixed = %v, want [lint-1 user-1]: the added finding must not wear the declined finding's id", dispositions.Fixed)
+	}
+
+	// The fixer's own input carries the added concern and not the declined
+	// defect, which stays deferred.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case sctx := <-contexts:
+			seen := string(sctx.PreviousFindings)
+			if !strings.Contains(seen, `"id":"user-1"`) || !strings.Contains(seen, "independent user-added fix") {
+				t.Fatalf("fixer input = %s, want the added finding under its own id", seen)
+			}
+			if strings.Contains(seen, "explicitly declined defect") {
+				t.Fatalf("fixer input = %s, must not carry the declined finding", seen)
+			}
+			goto dispatched
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fix round never ran")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+dispatched:
+	// The record agrees with the echo: the selection is the fixed set, so the
+	// declined finding's decision is preserved as the complement.
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, %v", steps, err)
+	}
+	roundDeadline := time.Now().Add(5 * time.Second)
+	for {
+		rounds, err := database.GetRoundsByStep(steps[0].ID)
+		if err == nil {
+			for _, round := range rounds {
+				if round.SelectionSource == nil || *round.SelectionSource != db.RoundSelectionSourceUser {
+					continue
+				}
+				if got := selectedIDsOf(t, round); strings.Join(got, ",") != "lint-1,user-1" {
+					t.Fatalf("recorded selection = %v, want [lint-1 user-1]", got)
+				}
+				goto recorded
+			}
+		}
+		if time.Now().After(roundDeadline) {
+			t.Fatal("no fix decision was recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+recorded:
+	approvalDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepLint, types.ActionApprove, nil); err == nil {
+			break
+		} else if time.Now().After(approvalDeadline) {
+			t.Fatalf("gate never accepted approval: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitExecutorDone(t, done)
+}
+
+// A gate ID is whatever the producer normalized, and normalization trims it:
+// surrounding whitespace is not part of the identity, so both the displayed
+// spelling and a padded one select or decline the same finding. Before the
+// producer trimmed, a padded gate ID had no spelling that survived the
+// response-side trim and could equal it.
+func TestSplitFixResponse_PaddedGateIDIsSelectableByItsTrimmedID(t *testing.T) {
+	findings := types.NormalizeFindings(types.Findings{Items: []types.Finding{
+		{ID: " R1 ", Severity: "error", Description: "padded gate id"},
+	}}, "findings")
+	gate, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gate, `"id":"R1"`) {
+		t.Fatalf("gate json = %s, want the normalized id", gate)
+	}
+	for _, spelling := range []string{"R1", " R1 ", "\tR1\n"} {
+		if _, err := splitFixResponse(gate, nil, []string{spelling}, nil); err != nil {
+			t.Fatalf("selecting with %q was refused: %v", spelling, err)
+		}
+		if _, err := splitFixResponse(gate, nil, nil, []string{spelling}); err != nil {
+			t.Fatalf("declining with %q was refused: %v", spelling, err)
+		}
+	}
+}
+
+// The fail-closed promise covers the stored decisions, not only the read: a
+// round whose recorded selection cannot be decoded parks the gate instead of
+// silently counting as "nothing was decided", which would let a response be
+// attributed against an identity set the state does not actually support.
+func TestExecutor_FixResponseRefusedWhenAStoredDecisionCannotBeDecoded(t *testing.T) {
+	exec, database, run, _, done := respondFixStepFindings(t)
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("steps = %+v, %v", steps, err)
+	}
+	rounds, err := database.GetRoundsByStep(steps[0].ID)
+	if err != nil || len(rounds) == 0 {
+		t.Fatalf("rounds = %+v, %v", rounds, err)
+	}
+	broken := "{broken"
+	if err := database.SetStepRoundUserDecision(rounds[0].ID, &broken, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1"}, []string{"R2", "R3"}, nil, nil, "")
+	var refusal *RespondRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a refusal: an undecodable stored decision is unreadable state", err)
+	}
+	if !strings.Contains(refusal.Message, "could not be read") {
+		t.Fatalf("message = %q, want the decoding failure named", refusal.Message)
+	}
+
+	// The gate is still parked: with the row readable again the same response
+	// is accepted.
+	restored := marshalFindingIDs([]string{"R1"})
+	if err := database.SetStepRoundUserDecision(rounds[0].ID, &restored, db.RoundSelectionSourceUser, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1"}, []string{"R2", "R3"}, nil, nil, ""); err != nil {
+		t.Fatalf("the still-parked gate refused the response once its history decoded: %v", err)
+	}
+	approvalDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
+			break
+		} else if time.Now().After(approvalDeadline) {
+			t.Fatalf("gate never accepted approval: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitExecutorDone(t, done)
 }

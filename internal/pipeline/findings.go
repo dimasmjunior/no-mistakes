@@ -713,6 +713,41 @@ func combineSelectedFindingIDs(selected []string, mergedFindings string) []strin
 // mergeUserOverridesJSON takes a findings JSON payload and applies
 // per-finding user instructions and user-authored findings. When no
 // overrides are present the input is returned unchanged.
+// resolveAddedFindingIDs clears the ID of any user-added finding that reuses
+// an ID from the complete gate, so the merge allocates a fresh one. The gate is
+// the identity space every later round attributes decisions by, for every step
+// and not only Review: an added finding wearing the ID of a finding this
+// response ignored would otherwise be recorded - and echoed - as a fix for that
+// ID, while the declined finding's own decision was dropped. An addition that
+// arrives without an ID is allocated by the merge itself, so it can only take a
+// gate ID when the gate's own IDs use the same "user-N" shape.
+func resolveAddedFindingIDs(gateJSON string, added []types.Finding) []types.Finding {
+	if len(added) == 0 || gateJSON == "" {
+		return added
+	}
+	gate, err := types.ParseFindingsJSON(gateJSON)
+	if err != nil {
+		return added
+	}
+	used := make(map[string]bool, len(gate.Items))
+	for _, item := range gate.Items {
+		if item.ID != "" {
+			used[item.ID] = true
+		}
+	}
+	if len(used) == 0 {
+		return added
+	}
+	resolved := make([]types.Finding, len(added))
+	copy(resolved, added)
+	for i := range resolved {
+		if used[resolved[i].ID] {
+			resolved[i].ID = ""
+		}
+	}
+	return resolved
+}
+
 func mergeUserOverridesJSON(raw string, instructions map[string]string, added []types.Finding) string {
 	if len(instructions) == 0 && len(added) == 0 {
 		return raw

@@ -1570,8 +1570,8 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	var added []types.Finding
 
 	if act == types.ActionFix {
-		if len(findingIDs) == 0 && ra.addFinding == "" {
-			return emitError(cmd, 2, "--action fix requires --findings <id,...> or --add-finding <json>",
+		if len(findingIDs) == 0 && ra.addFinding == "" && len(ignoreIDs) == 0 {
+			return emitError(cmd, 2, "--action fix requires --findings <id,...>, --ignore <id,...>, or --add-finding <json>",
 				"Run `no-mistakes axi status` to list finding IDs")
 		}
 		if note := strings.TrimSpace(ra.instructions); note != "" && len(findingIDs) > 0 {

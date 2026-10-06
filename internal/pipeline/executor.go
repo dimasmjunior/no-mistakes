@@ -81,6 +81,10 @@ type Executor struct {
 	// wherever e.waiting is.
 	waitingFindings     string
 	waitingStepResultID string
+	// waitingRoundID is the round the parked gate belongs to. The response path
+	// records the decision against it before the caller is told what was
+	// recorded, so an echo never claims a decision that is not durable.
+	waitingRoundID string
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
@@ -264,6 +268,17 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		// the round would record the real finding as declined.
 		response.findingIDs = split.Fixed
 		response.ignoreFindingIDs = split.Ignored
+		// The decision is made durable HERE, while the gate is still parked:
+		// the caller is told what was recorded only after it is recorded, so a
+		// failed write surfaces as an error and the gate stays parked instead
+		// of an echo claiming a decision the next gate cannot read. The fix
+		// round re-records the same decision with its dispatch list when it
+		// runs, so this is the ordering guarantee, not a second source of
+		// truth.
+		if err := e.persistResponseDecision(step, response); err != nil {
+			e.mu.Unlock()
+			return RespondDispositions{}, err
+		}
 		_, _, _, normalized := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
 		dispositions.Fixed = combineSelectedFindingIDs(split.Fixed, normalized)
 	}
@@ -294,6 +309,17 @@ func (e *Executor) roundsForFixValidation() ([]*db.StepRound, *RespondRefusal) {
 		return nil, &RespondRefusal{
 			Message: fmt.Sprintf("this step's earlier decisions could not be read (%v), so the response was not recorded", err),
 			Help:    fixResponseUnreadableHelp,
+		}
+	}
+	// The SQL read is not the whole guarantee: a stored decision this cannot
+	// decode would silently count as nothing decided, so the decoding failure
+	// parks the gate the same way a failed read does.
+	for _, round := range rounds {
+		if err := decodeRoundDecision(round); err != nil {
+			return nil, &RespondRefusal{
+				Message: fmt.Sprintf("this step's earlier decisions could not be read (%v), so the response was not recorded", err),
+				Help:    fixResponseUnreadableHelp,
+			}
 		}
 	}
 	return rounds, nil
@@ -599,6 +625,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.waitingApprovalRefusal = approvalRefusal(gate.step.Name(), gate.findings)
 	e.waitingFindings = gate.findings
 	e.waitingStepResultID = gate.stepResult.ID
+	e.waitingRoundID = gate.lastRoundID
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsAndError(
 		ipc.EventStepCompleted,
@@ -720,7 +747,9 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 				newSelectedIDs := combineSelectedFindingIDs(response.findingIDs, selectedForPersistence)
 				selectedOutstandingIDs = combineFindingIDLists(gate.selectedOutstandingIDs, newSelectedIDs)
 			}
-			e.recordFixDecision(gate.lastRoundID, response, selectedForPersistence, selected, merged)
+			if dbErr := e.recordFixDecision(gate.lastRoundID, response, selectedForPersistence, selected, merged); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("recovered fix decision for step %s: %w", gate.step.Name(), dbErr), ctx)
+			}
 			if dbErr := e.db.StartStepFixRound(gate.stepResult.ID, e.autoFixLimit(gate.step.Name())); dbErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("mark recovered step %s fixing: %w", gate.step.Name(), dbErr), ctx)
 			}
@@ -1410,6 +1439,7 @@ rounds:
 			e.waitingApprovalRefusal = approvalRefusal(stepName, effectiveFindings)
 			e.waitingFindings = effectiveFindings
 			e.waitingStepResultID = sr.ID
+			e.waitingRoundID = currentRoundID
 			e.mu.Unlock()
 
 			// Parking starts before the gate becomes observable. This includes the
@@ -1519,7 +1549,9 @@ rounds:
 					selectedOutstandingIDs = combineFindingIDLists(selectedOutstandingIDs, newPendingIDs)
 				}
 				nextTrigger = "auto_fix"
-				e.recordFixDecision(currentRoundID, response, selectedForPersistence, selectedFindings, mergedFindings)
+				if dbErr := e.recordFixDecision(currentRoundID, response, selectedForPersistence, selectedFindings, mergedFindings); dbErr != nil {
+					return false, "", e.failRun(run, repo, fmt.Errorf("fix decision for step %s: %w", stepName, dbErr), ctx)
+				}
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", nil)
 				slog.Info("step fix requested, re-executing", "step", stepName)
 				continue rounds
@@ -1672,6 +1704,32 @@ func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResul
 	return nil
 }
 
+// persistResponseDecision writes the durable decision a fix response reports,
+// using the same normalized selection the echo will show. It is called with the
+// gate still parked, so a failure leaves the gate exactly as it was and the
+// response unapplied. A response with no round to record against is refused
+// rather than echoed: an unrecorded decision is what the next gate reads as
+// "never decided".
+func (e *Executor) persistResponseDecision(step types.StepName, response approvalResponse) error {
+	if e.db == nil || e.waitingRoundID == "" {
+		return fmt.Errorf("record the response's decision: no round is in flight for step %s", step)
+	}
+	_, _, _, persisted := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
+	idsJSON := marshalFindingIDs(combineSelectedFindingIDs(response.findingIDs, persisted))
+	if idsJSON == "" {
+		if len(response.ignoreFindingIDs) > 0 {
+			if err := e.db.SetStepRoundDeclined(e.waitingRoundID); err != nil {
+				return fmt.Errorf("record the response's declines: %w", err)
+			}
+		}
+		return nil
+	}
+	if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &idsJSON, db.RoundSelectionSourceUser, nil); err != nil {
+		return fmt.Errorf("record the response's selection: %w", err)
+	}
+	return nil
+}
+
 // recordFixDecision persists the decision a fix response recorded on the round
 // whose gate it answered: the findings it selected to fix and the merged list
 // dispatched to the fixer. It is shared by the live gate loop and the
@@ -1679,9 +1737,9 @@ func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResul
 // written here: it is derived on read as the complement of this selection
 // (declinedFindingLines), minus the findings an earlier round of the same step
 // chose to fix.
-func (e *Executor) recordFixDecision(roundID string, response approvalResponse, selectedForPersistence, selected, merged string) {
+func (e *Executor) recordFixDecision(roundID string, response approvalResponse, selectedForPersistence, selected, merged string) error {
 	if e == nil || e.db == nil || roundID == "" {
-		return
+		return nil
 	}
 	allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, selectedForPersistence)
 	idsJSON := marshalFindingIDs(allSelectedIDs)
@@ -1693,19 +1751,20 @@ func (e *Executor) recordFixDecision(roundID string, response approvalResponse, 
 			// nothing, so later gates would show the declined findings as
 			// undecided and ask for them again.
 			if dbErr := e.db.SetStepRoundDeclined(roundID); dbErr != nil {
-				slog.Warn("failed to record an all-ignored fix response", "round", roundID, "error", dbErr)
+				return fmt.Errorf("record the all-ignored response's declines: %w", dbErr)
 			}
 		}
 		// Nothing was selected, so there is no selection to record.
-		return
+		return nil
 	}
 	var userFindingsJSON *string
 	if merged != "" && merged != selected {
 		userFindingsJSON = &selectedForPersistence
 	}
 	if dbErr := e.db.SetStepRoundUserDecision(roundID, &idsJSON, db.RoundSelectionSourceUser, userFindingsJSON); dbErr != nil {
-		slog.Warn("failed to record user decision", "round", roundID, "error", dbErr)
+		return fmt.Errorf("record user decision: %w", dbErr)
 	}
+	return nil
 }
 
 func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {
@@ -2371,7 +2430,12 @@ func (e *Executor) ReviewConversationAnswerDir(runID string) string {
 
 func normalizeFixSelection(gate string, response approvalResponse, review bool) (selected, merged, outstanding, persisted string) {
 	selected = filterFindingsJSON(gate, response.findingIDs)
-	merged = mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
+	// User-added findings are merged against the selection for their content but
+	// allocated against the COMPLETE gate for their identity, on every step:
+	// an added finding must never take an ID that belongs to a gate finding
+	// this response declined, or the record and the echo would claim a fix for
+	// a concern the operator did not choose and the decline would be dropped.
+	merged = mergeUserOverridesJSON(selected, response.instructions, resolveAddedFindingIDs(gate, response.addedFindings))
 	outstanding, persisted = gate, merged
 	if review {
 		outstanding = mergeOutstandingFindingsJSON(gate, merged, nil)
