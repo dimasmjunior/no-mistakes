@@ -354,6 +354,27 @@ func idsOutside(ids []string, inGate map[string]bool) []string {
 	return out
 }
 
+// excludeFindingIDs returns ids without the excluded ones, in their original
+// order. It keeps a disposition echo from naming the same finding twice: a gate
+// finding a recovered response dispatched again is reported as fixed, not as
+// merely kept.
+func excludeFindingIDs(ids, excluded []string) []string {
+	if len(ids) == 0 || len(excluded) == 0 {
+		return ids
+	}
+	drop := make(map[string]bool, len(excluded))
+	for _, id := range excluded {
+		drop[id] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !drop[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // idsInPayloadOrder orders the given IDs the way the gate shows them.
 func idsInPayloadOrder(ids []string, gate []string) []string {
 	set := make(map[string]bool, len(ids))

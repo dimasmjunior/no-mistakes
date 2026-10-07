@@ -283,12 +283,25 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 			previous = filterFindingsJSON(raw, findingIDsFromSelectionJSON(*round.SelectedFindingIDs))
 		}
 		response.addedFindings = resolveAddedFindingIDs(response.addedFindings, e.waitingFindings, previous)
+		// A nonempty previous means recovery parked a round that already
+		// recorded a decision, and that round's dispatch is the one that never
+		// ran (see restorePendingDecision). The response that re-decides the
+		// gate carries the recorded selection, its instructions and its
+		// user-authored findings into the dispatch below, so accepted work is
+		// not left in the saved record with nothing reading it. Those restored
+		// gate findings are dispatched by this response, so they are reported
+		// under fixed and not also under kept.
+		var restoredGateIDs []string
+		response, restoredGateIDs = restorePendingDecision(response, previous, e.waitingFindings)
 		if err := e.persistResponseDecision(step, response, previous); err != nil {
 			e.mu.Unlock()
 			return RespondDispositions{}, err
 		}
 		_, _, _, normalized := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
-		dispositions.Fixed = combineSelectedFindingIDs(split.Fixed, normalized)
+		// Fixed keeps gate order: a restored finding takes its place in the
+		// gate's own order rather than ahead of the ones the response named.
+		dispositions.Fixed = combineSelectedFindingIDs(idsInPayloadOrder(response.findingIDs, findingIDsInPayloadOrder(e.waitingFindings)), normalized)
+		dispositions.Kept = excludeFindingIDs(split.Kept, restoredGateIDs)
 	}
 	e.waiting = false
 	e.waitingFindings = ""
@@ -1737,6 +1750,95 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 		return fmt.Errorf("record the response's selection: %w", err)
 	}
 	return nil
+}
+
+// restorePendingDecision folds the decision a re-parked round already recorded
+// into the response that re-decides that round, and reports the gate findings
+// it restored so the echo can name them once.
+//
+// persistResponseDecision makes a fix response's decision durable BEFORE its
+// dispatch. A daemon that stops in the window between that write and the fix
+// round comes back parked on the same round with the decision recorded and
+// never applied, so recovery parks that round again and the response that
+// answers it is the one that reaches the fixer. Without this, the accepted
+// selection's user-authored findings and per-finding instructions stay in the
+// saved record and nothing downstream ever reads them into a dispatch, even
+// though the daemon acknowledged them when they were made.
+//
+// previous is that record's payload filtered to its selection, so every item in
+// it was chosen by a response the daemon accepted. An addition the new response
+// re-states by content - a driver reissuing the same command after a restart -
+// is restored once, under the recorded identity, with the new response's
+// instructions for it, so the fixer never sees the same finding twice.
+func restorePendingDecision(response approvalResponse, previous, gate string) (approvalResponse, []string) {
+	if previous == "" {
+		return response, nil
+	}
+	recorded, err := types.ParseFindingsJSON(previous)
+	if err != nil {
+		return response, nil
+	}
+	inGate := make(map[string]bool)
+	for _, id := range findingIDsInPayloadOrder(gate) {
+		inGate[id] = true
+	}
+	restated := make(map[types.Finding]types.Finding, len(response.addedFindings))
+	for _, item := range response.addedFindings {
+		restated[findingKey(item)] = item
+	}
+	var restoredGateIDs []string
+	var restoredAdditions []types.Finding
+	var restoredKeys []types.Finding
+	instructions := make(map[string]string)
+	for _, item := range recorded.Items {
+		if item.ID == "" {
+			continue
+		}
+		if inGate[item.ID] {
+			restoredGateIDs = append(restoredGateIDs, item.ID)
+			if item.UserInstructions != "" {
+				instructions[item.ID] = item.UserInstructions
+			}
+			continue
+		}
+		// The response supplied this finding again; its identity stays the
+		// recorded one, so only instructions are taken from the new item.
+		if replacement, ok := restated[findingKey(item)]; ok && replacement.UserInstructions != "" {
+			item.UserInstructions = replacement.UserInstructions
+		}
+		restoredAdditions = append(restoredAdditions, item)
+		restoredKeys = append(restoredKeys, findingKey(item))
+	}
+	if len(restoredGateIDs) == 0 && len(restoredAdditions) == 0 {
+		return response, nil
+	}
+	response.findingIDs = combineFindingIDLists(restoredGateIDs, response.findingIDs)
+	if len(instructions) > 0 {
+		merged := make(map[string]string, len(instructions)+len(response.instructions))
+		for id, note := range instructions {
+			merged[id] = note
+		}
+		// An instruction the response states itself is the operator's latest
+		// word about that finding and wins over the recorded one.
+		for id, note := range response.instructions {
+			merged[id] = note
+		}
+		response.instructions = merged
+	}
+	// A restatement is dropped in favor of the restored item: dispatching both
+	// would hand the fixer the same finding twice.
+	restored := make(map[types.Finding]bool, len(restoredKeys))
+	for _, key := range restoredKeys {
+		restored[key] = true
+	}
+	explicit := make([]types.Finding, 0, len(response.addedFindings))
+	for _, item := range response.addedFindings {
+		if !restored[findingKey(item)] {
+			explicit = append(explicit, item)
+		}
+	}
+	response.addedFindings = append(restoredAdditions, explicit...)
+	return response, restoredGateIDs
 }
 
 func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {

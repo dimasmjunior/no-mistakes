@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"testing"
@@ -78,6 +79,12 @@ func TestExecutor_FixResponseRefusedWhenTheDecisionWriteFails(t *testing.T) {
 	waitExecutorDone(t, done)
 }
 
+// A round can be answered twice only when recovery parks it again: the first
+// response's decision was recorded at park time and its dispatch never ran, so
+// the second response is what reaches the fixer. It keeps the acknowledged
+// content in the record and restores it into that dispatch, which is why both
+// the recorded payload and the dispatch below carry the first response's
+// finding, its instructions and its user-authored addition.
 func TestExecutor_ReansweredRoundPreservesAcknowledgedFindingContent(t *testing.T) {
 	for _, step := range []types.StepName{types.StepReview, types.StepLint} {
 		t.Run(string(step), func(t *testing.T) {
@@ -144,13 +151,22 @@ func TestExecutor_ReansweredRoundPreservesAcknowledgedFindingContent(t *testing.
 			}
 			assertContent(read(), map[string]string{"R1": "first", "user-1": "repair logger"})
 			second, response := respond([]string{"R2"}, nil, nil, []types.Finding{{Description: "repair metrics"}})
-			if strings.Join(second.Fixed, ",") != "R2,user-2" || strings.Join(second.Kept, ",") != "R1,R3" {
-				t.Fatalf("recovered echo = %+v", second)
+			// The restored decision is dispatched by this response, so it is
+			// echoed under fixed; R3 alone is merely kept.
+			if strings.Join(second.Fixed, ",") != "R1,R2,user-1,user-2" || strings.Join(second.Kept, ",") != "R3" {
+				t.Fatalf("reanswered echo = %+v", second)
 			}
 			assertContent(read(), map[string]string{"R1": "first", "R2": "second", "user-1": "repair logger", "user-2": "repair metrics"})
 			_, merged, _, _ := normalizeFixSelection(gate, response, step == types.StepReview)
-			if strings.Join(findingIDList(merged), ",") != "R2,user-2" {
+			if strings.Join(findingIDList(merged), ",") != "R1,R2,user-1,user-2" {
 				t.Fatalf("dispatch = %s", merged)
+			}
+			dispatched, err := types.ParseFindingsJSON(merged)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dispatched.Items[0].UserInstructions != "preserve logger format" || dispatched.Items[2].UserInstructions != "keep compatibility" {
+				t.Fatalf("dispatch lost the acknowledged instructions: %+v", dispatched.Items)
 			}
 			chosen := earlierChosenToFixIDs([]*db.StepRound{read()}, gate)
 			if !chosen["R1"] || !chosen["R2"] || chosen["R3"] {
@@ -173,5 +189,125 @@ func TestNormalizeFixSelection_AllocatesAgainstIgnoredGateIDs(t *testing.T) {
 				t.Fatalf("review=%v ids=%s, want selected gate ID and two fresh IDs", review, got)
 			}
 		}
+	}
+}
+
+// A fix response is durable before it is dispatched: persistResponseDecision
+// runs while the gate is still parked, so a daemon that stops in the window
+// between that write and the fix round comes back parked on the same round with
+// the decision recorded and never applied. The response that re-decides that
+// round is the dispatch, so it must carry the recorded selection - including
+// the --add-finding item and every instruction attached to it - to the fixer
+// instead of leaving it in the saved record.
+func TestExecutor_RecoveredRoundRestoresTheAcceptedAddition(t *testing.T) {
+	const gate = `{"findings":[` +
+		`{"id":"R1","severity":"warning","description":"first"},` +
+		`{"id":"R2","severity":"warning","description":"second"}],"summary":"2 findings"}`
+
+	for _, tc := range []struct {
+		name  string
+		added []types.Finding
+	}{
+		{name: "retrying what the recovered gate shows"},
+		{name: "reissuing the recorded addition", added: []types.Finding{{Description: "repair logger", UserInstructions: "keep compatibility"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			stepResult, recoveredRun := seedRecoveredReviewGate(t, database, run, gate, types.StepStatusAwaitingApproval, "")
+			rounds, err := database.GetRoundsByStep(stepResult.ID)
+			if err != nil || len(rounds) != 1 {
+				t.Fatalf("rounds = %v, error = %v", rounds, err)
+			}
+
+			// The crashed daemon's own response: persisted, then never consumed
+			// because its process stopped before the gate loop picked it up. Its
+			// buffered approval channel holds the response nothing read, which is
+			// exactly the durable state startup recovery finds.
+			crashed := NewExecutor(database, p, nil, nil, nil, nil)
+			crashed.waiting = true
+			crashed.waitingStep = types.StepReview
+			crashed.waitingStepResultID = stepResult.ID
+			crashed.waitingRoundID = rounds[0].ID
+			crashed.waitingFindings = gate
+			accepted := []types.Finding{{Description: "repair logger", UserInstructions: "keep compatibility"}}
+			if _, err := crashed.RespondWithOverrides(types.StepReview, types.ActionFix, []string{"R1"}, []string{"R2"}, map[string]string{"R1": "preserve logger format"}, accepted, ""); err != nil {
+				t.Fatal(err)
+			}
+
+			// Recovery parks the same round again and the operator answers it,
+			// either retrying the visible findings or reissuing the same command.
+			dispatched := make(chan string, 4)
+			step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+				dispatched <- sctx.PreviousFindings
+				return &StepOutcome{}, nil
+			}}
+			exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- exec.Resume(ctx, recoveredRun, repo, t.TempDir()) }()
+
+			deadline := time.Now().Add(5 * time.Second)
+			var respondErr error
+			for time.Now().Before(deadline) {
+				if respondErr = respondFixPartialWithOverrides(t, exec, types.StepReview, []string{"R1"}, nil, tc.added); respondErr == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if respondErr != nil {
+				t.Fatalf("respond to recovered gate: %v", respondErr)
+			}
+
+			var merged string
+			select {
+			case merged = <-dispatched:
+			case err := <-done:
+				t.Fatalf("recovered step finished without dispatching a fix: %v", err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("recovered step never dispatched a fix")
+			}
+			findings, err := types.ParseFindingsJSON(merged)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(findingIDList(merged), ","); got != "R1,user-1" {
+				t.Fatalf("dispatch = %s, want the selected gate finding and the recorded addition exactly once", got)
+			}
+			if instructions := findings.Items[0].UserInstructions; instructions != "preserve logger format" {
+				t.Fatalf("accepted instructions for the gate finding = %q", instructions)
+			}
+			if got := findings.Items[1].UserInstructions; got != "keep compatibility" {
+				t.Fatalf("accepted instructions for the addition = %q", got)
+			}
+			if findings.Items[1].Description != "repair logger" {
+				t.Fatalf("accepted addition = %+v", findings.Items[1])
+			}
+
+			// The record keeps the same two findings under the same identity, so
+			// the restored dispatch and the durable decision agree.
+			recorded, err := database.GetRoundsByStep(stepResult.ID)
+			if err != nil || len(recorded) == 0 {
+				t.Fatalf("rounds = %v, error = %v", recorded, err)
+			}
+			if got := strings.Join(selectedIDsOf(t, recorded[0]), ","); got != "R1,user-1" {
+				t.Fatalf("recorded selection = %s", got)
+			}
+			if recorded[0].UserFindingsJSON == nil || strings.Join(findingIDList(*recorded[0].UserFindingsJSON), ",") != "R1,user-1" {
+				payload := "<nil>"
+				if recorded[0].UserFindingsJSON != nil {
+					payload = *recorded[0].UserFindingsJSON
+				}
+				t.Fatalf("recorded payload = %s", payload)
+			}
+
+			// Stop the recovered executor before the fixture closes its database.
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("recovered executor did not stop")
+			}
+		})
 	}
 }
