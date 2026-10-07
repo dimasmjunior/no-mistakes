@@ -783,15 +783,15 @@ func TestExecutor_DispositionEchoIncludesNormalizedAdditions(t *testing.T) {
 			}
 			want := "user-1"
 			if len(ignored) > 0 {
-				want = "review-1"
+				want = "user-2"
 			}
 			if strings.Join(got.Fixed, ",") != want {
 				t.Fatalf("fixed = %v, want %s", got.Fixed, want)
 			}
 			response := <-exec.approvalCh
-			selected, merged, _, persisted := normalizeFixSelection(gate, response, true)
-			if err := exec.recordFixDecision(round.ID, response, persisted, selected, merged); err != nil {
-				t.Fatalf("recordFixDecision: %v", err)
+			_, _, _, persisted := normalizeFixSelection(gate, response, true)
+			if strings.Join(findingIDList(persisted), ",") != want {
+				t.Fatalf("dispatch = %s, want %s", persisted, want)
 			}
 			rounds, err := database.GetRoundsByStep(sr.ID)
 			if err != nil {
@@ -831,7 +831,7 @@ func TestExecutor_AddedFindingCannotTakeADeclinedGateFindingID(t *testing.T) {
 	waitForStepStatus(t, database, run.ID, types.StepLint, types.StepStatusAwaitingApproval)
 	<-contexts // the parking round
 
-	added := []types.Finding{{ID: "lint-2", Severity: "warning", Description: "independent user-added fix"}}
+	added := []types.Finding{{ID: " lint-2 ", Severity: "warning", Description: "independent user-added fix"}}
 	dispositions, err := exec.RespondWithOverrides(types.StepLint, types.ActionFix, []string{"lint-1"}, []string{"lint-2"}, nil, added, "")
 	if err != nil {
 		t.Fatalf("response refused: %v", err)

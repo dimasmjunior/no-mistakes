@@ -268,14 +268,22 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		// the round would record the real finding as declined.
 		response.findingIDs = split.Fixed
 		response.ignoreFindingIDs = split.Ignored
-		// The decision is made durable HERE, while the gate is still parked:
-		// the caller is told what was recorded only after it is recorded, so a
-		// failed write surfaces as an error and the gate stays parked instead
-		// of an echo claiming a decision the next gate cannot read. The fix
-		// round re-records the same decision with its dispatch list when it
-		// runs, so this is the ordering guarantee, not a second source of
-		// truth.
-		if err := e.persistResponseDecision(step, response); err != nil {
+		previous := ""
+		for _, round := range rounds {
+			if round.ID != e.waitingRoundID || !humanDecidedRound(round) || round.SelectedFindingIDs == nil {
+				continue
+			}
+			raw := ""
+			if round.FindingsJSON != nil {
+				raw = *round.FindingsJSON
+			}
+			if round.UserFindingsJSON != nil {
+				raw = *round.UserFindingsJSON
+			}
+			previous = filterFindingsJSON(raw, findingIDsFromSelectionJSON(*round.SelectedFindingIDs))
+		}
+		response.addedFindings = resolveAddedFindingIDs(response.addedFindings, e.waitingFindings, previous)
+		if err := e.persistResponseDecision(step, response, previous); err != nil {
 			e.mu.Unlock()
 			return RespondDispositions{}, err
 		}
@@ -746,9 +754,6 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 				// remapped user-added finding from the outstanding set.
 				newSelectedIDs := combineSelectedFindingIDs(response.findingIDs, selectedForPersistence)
 				selectedOutstandingIDs = combineFindingIDLists(gate.selectedOutstandingIDs, newSelectedIDs)
-			}
-			if dbErr := e.recordFixDecision(gate.lastRoundID, response, selectedForPersistence, selected, merged); dbErr != nil {
-				return e.failRun(run, repo, fmt.Errorf("recovered fix decision for step %s: %w", gate.step.Name(), dbErr), ctx)
 			}
 			if dbErr := e.db.StartStepFixRound(gate.stepResult.ID, e.autoFixLimit(gate.step.Name())); dbErr != nil {
 				return e.failRun(run, repo, fmt.Errorf("mark recovered step %s fixing: %w", gate.step.Name(), dbErr), ctx)
@@ -1549,9 +1554,6 @@ rounds:
 					selectedOutstandingIDs = combineFindingIDLists(selectedOutstandingIDs, newPendingIDs)
 				}
 				nextTrigger = "auto_fix"
-				if dbErr := e.recordFixDecision(currentRoundID, response, selectedForPersistence, selectedFindings, mergedFindings); dbErr != nil {
-					return false, "", e.failRun(run, repo, fmt.Errorf("fix decision for step %s: %w", stepName, dbErr), ctx)
-				}
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFixing), "", "", nil)
 				slog.Info("step fix requested, re-executing", "step", stepName)
 				continue rounds
@@ -1710,11 +1712,18 @@ func (e *Executor) applyApprovalOverride(step Step, sctx *StepContext, stepResul
 // response unapplied. A response with no round to record against is refused
 // rather than echoed: an unrecorded decision is what the next gate reads as
 // "never decided".
-func (e *Executor) persistResponseDecision(step types.StepName, response approvalResponse) error {
+func (e *Executor) persistResponseDecision(step types.StepName, response approvalResponse, previous string) error {
 	if e.db == nil || e.waitingRoundID == "" {
 		return fmt.Errorf("record the response's decision: no round is in flight for step %s", step)
 	}
 	_, _, _, persisted := normalizeFixSelection(e.waitingFindings, response, step == types.StepReview)
+	if previous != "" {
+		current, _ := types.ParseFindingsJSON(persisted)
+		prior, _ := types.ParseFindingsJSON(previous)
+		kept := types.ExcludeFindings(prior, findingIDList(persisted))
+		current.Items = append(current.Items, kept.Items...)
+		persisted, _ = types.MarshalFindingsJSON(current)
+	}
 	idsJSON := marshalFindingIDs(combineSelectedFindingIDs(response.findingIDs, persisted))
 	if idsJSON == "" {
 		if len(response.ignoreFindingIDs) > 0 {
@@ -1724,45 +1733,8 @@ func (e *Executor) persistResponseDecision(step types.StepName, response approva
 		}
 		return nil
 	}
-	if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &idsJSON, db.RoundSelectionSourceUser, nil); err != nil {
+	if err := e.db.SetStepRoundUserDecision(e.waitingRoundID, &idsJSON, db.RoundSelectionSourceUser, &persisted); err != nil {
 		return fmt.Errorf("record the response's selection: %w", err)
-	}
-	return nil
-}
-
-// recordFixDecision persists the decision a fix response recorded on the round
-// whose gate it answered: the findings it selected to fix and the merged list
-// dispatched to the fixer. It is shared by the live gate loop and the
-// recovered-gate path so both record the same thing. The decline set is not
-// written here: it is derived on read as the complement of this selection
-// (declinedFindingLines), minus the findings an earlier round of the same step
-// chose to fix.
-func (e *Executor) recordFixDecision(roundID string, response approvalResponse, selectedForPersistence, selected, merged string) error {
-	if e == nil || e.db == nil || roundID == "" {
-		return nil
-	}
-	allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, selectedForPersistence)
-	idsJSON := marshalFindingIDs(allSelectedIDs)
-	if idsJSON == "" {
-		if len(response.ignoreFindingIDs) > 0 {
-			// An accepted response that declined findings and selected none is
-			// a decision, and the derivation reads it as the explicit empty
-			// selection. Recording nothing would leave the complement saying
-			// nothing, so later gates would show the declined findings as
-			// undecided and ask for them again.
-			if dbErr := e.db.SetStepRoundDeclined(roundID); dbErr != nil {
-				return fmt.Errorf("record the all-ignored response's declines: %w", dbErr)
-			}
-		}
-		// Nothing was selected, so there is no selection to record.
-		return nil
-	}
-	var userFindingsJSON *string
-	if merged != "" && merged != selected {
-		userFindingsJSON = &selectedForPersistence
-	}
-	if dbErr := e.db.SetStepRoundUserDecision(roundID, &idsJSON, db.RoundSelectionSourceUser, userFindingsJSON); dbErr != nil {
-		return fmt.Errorf("record user decision: %w", dbErr)
 	}
 	return nil
 }
@@ -2435,7 +2407,7 @@ func normalizeFixSelection(gate string, response approvalResponse, review bool) 
 	// an added finding must never take an ID that belongs to a gate finding
 	// this response declined, or the record and the echo would claim a fix for
 	// a concern the operator did not choose and the decline would be dropped.
-	merged = mergeUserOverridesJSON(selected, response.instructions, resolveAddedFindingIDs(gate, response.addedFindings))
+	merged = mergeUserOverridesJSON(selected, response.instructions, resolveAddedFindingIDs(response.addedFindings, gate))
 	outstanding, persisted = gate, merged
 	if review {
 		outstanding = mergeOutstandingFindingsJSON(gate, merged, nil)

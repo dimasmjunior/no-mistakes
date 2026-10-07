@@ -146,8 +146,8 @@ func TestExecutor_ReviewCarryForward_RecoveryPersistsRemappedSelection(t *testin
 		t.Fatal("recovered review did not reach its rereview gate")
 	}
 	selected := findingIDsFromSelectionJSON(derefString(rounds[0].SelectedFindingIDs))
-	if !containsString(selected, "review-2") || containsString(selected, "user-1") {
-		t.Fatalf("recovered selection IDs = %v, want remapped review-2 without stale user-1", selected)
+	if !containsString(selected, "user-2") || containsString(selected, "user-1") {
+		t.Fatalf("recovered selection IDs = %v, want remapped user-2 without stale user-1", selected)
 	}
 	if rounds[0].UserFindingsJSON == nil {
 		t.Fatal("expected remapped user findings to be persisted")
@@ -156,8 +156,8 @@ func TestExecutor_ReviewCarryForward_RecoveryPersistsRemappedSelection(t *testin
 	if err != nil {
 		t.Fatalf("parse persisted user findings: %v", err)
 	}
-	if !containsFindingID(persistedUserFindings.Items, "review-2") || containsFindingID(persistedUserFindings.Items, "user-1") {
-		t.Fatalf("persisted user finding IDs = %v, want remapped review-2 without user-1", findingIDs(persistedUserFindings.Items))
+	if !containsFindingID(persistedUserFindings.Items, "user-2") || containsFindingID(persistedUserFindings.Items, "user-1") {
+		t.Fatalf("persisted user finding IDs = %v, want remapped user-2 without user-1", findingIDs(persistedUserFindings.Items))
 	}
 	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatal(err)
