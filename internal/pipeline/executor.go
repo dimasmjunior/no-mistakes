@@ -1656,23 +1656,6 @@ done:
 	return skipRemaining, restartFrom, nil
 }
 
-// recordDeclinedRound persists an approve, skip, or abort resolution as a real
-// decision instead of leaving no trace.
-//
-// Before this existed, those three resolutions wrote no finding-level state at
-// all, so a round where the human read a blocking finding and said "ship it as
-// is" was byte-identical to a round with no findings. Nothing downstream could
-// tell the two apart, and the only durable statement of what the change must do
-// stayed the user-intent prose - which is how a later step could re-derive and
-// re-apply the very change the human had just declined.
-//
-// The decline is stored the way a partial selection already stores one: as the
-// complement of selected_finding_ids. Writing an explicit empty array with the
-// user_declined source is what makes "selected nothing" representable, since a
-// NULL column means "no decision was recorded".
-//
-// Best effort by design. This is advisory prompt context for later steps, so a
-// failed write degrades to today's behavior and must never fail the run.
 // applyApprovalOverride is the single place both ActionApprove sites (the
 // live wait in executeStep and the daemon-restart recovery path in Resume)
 // route through before completing a step on approval. For a step implementing
@@ -1841,6 +1824,23 @@ func restorePendingDecision(response approvalResponse, previous, gate string) (a
 	return response, restoredGateIDs
 }
 
+// recordDeclinedRound persists an approve, skip, or abort resolution as a real
+// decision instead of leaving no trace.
+//
+// Before this existed, those three resolutions wrote no finding-level state at
+// all, so a round where the human read a blocking finding and said "ship it as
+// is" was byte-identical to a round with no findings. Nothing downstream could
+// tell the two apart, and the only durable statement of what the change must do
+// stayed the user-intent prose - which is how a later step could re-derive and
+// re-apply the very change the human had just declined.
+//
+// The decline is stored the way a partial selection already stores one: as the
+// complement of selected_finding_ids. Writing an explicit empty array with the
+// user_declined source is what makes "selected nothing" representable, since a
+// NULL column means "no decision was recorded".
+//
+// Best effort by design. This is advisory prompt context for later steps, so a
+// failed write degrades to today's behavior and must never fail the run.
 func (e *Executor) recordDeclinedRound(roundID, findingsJSON string, stepName types.StepName, roundNum int) {
 	if e == nil || e.db == nil || roundID == "" {
 		return
