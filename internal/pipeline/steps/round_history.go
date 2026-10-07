@@ -112,8 +112,8 @@ func withChosenToFix(chosen map[string]bool, r *db.StepRound) map[string]bool {
 // branchEarlierFixes maps each loaded branch-decision round to the findings a
 // human chose to fix in earlier rounds of the same step result. The loader
 // returns a recency window, so a predecessor outside it is recovered by
-// re-reading the step's rounds; when that read fails the round is rendered
-// without the carry rather than with an incomplete one.
+// re-reading the step's rounds; when that read fails the affected step's
+// branch-decision entries are omitted rather than rendered with incomplete carry.
 func branchEarlierFixes(entries []*db.BranchDecisionRound, database *db.DB) map[*db.StepRound]map[string]bool {
 	type runStep struct {
 		runID string
