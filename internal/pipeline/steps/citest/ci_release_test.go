@@ -12,19 +12,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
 
-// TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge is the CI step's
-// default contract: the green observation IS the verdict.
-//
-// Execute returns right there, so it never waits another poll interval - which
-// is what keeps the recorded step duration covering CI only, instead of mixing
-// in however long the human took to merge - and it leaves CI readiness plus the
-// open PR it observed durably recorded, which is what lets the finished run be
-// recorded as checks_passed rather than as an ordinary completion.
-//
-// Reading the PR state exactly once pins the other half: with no further poll,
-// a merge that happens afterwards cannot be observed and cannot change what
-// this run recorded. The opt-in ci_monitor_until_merged watch is what keeps
-// observing, and the watch tests set it explicitly.
 func TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
@@ -35,6 +22,11 @@ func TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &stepstest.MockAgent{AgentName: "test"}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.CIReadinessChanged = func(ready, _ bool) {
+		if ready {
+			t.Error("release must not publish live-monitor readiness")
+		}
+	}
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Minute
@@ -58,8 +50,11 @@ func TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.CIReadyAt == nil {
-		t.Fatal("the green verdict must record CI readiness, or the run cannot be recorded as checks_passed")
+	if run.CIReadyAt != nil {
+		t.Fatal("release readiness must wait for atomic step completion")
+	}
+	if outcome.CIReadyNoCI == nil || *outcome.CIReadyNoCI {
+		t.Fatal("green verdict must request completion with observed-check readiness")
 	}
 	if run.CIReadyNoCI {
 		t.Fatal("green checks must not claim the trusted no_ci declaration")
@@ -93,6 +88,11 @@ func TestCIStep_TrustedNoCIReleasesWithoutWaiting(t *testing.T) {
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &stepstest.MockAgent{AgentName: "test"}
 	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.CIReadinessChanged = func(ready, _ bool) {
+		if ready {
+			t.Error("release must not publish live-monitor readiness")
+		}
+	}
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Minute
@@ -117,8 +117,11 @@ func TestCIStep_TrustedNoCIReleasesWithoutWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.CIReadyAt == nil || !run.CIReadyNoCI {
-		t.Fatalf("readiness = %v/%t, want the declared no_ci readiness recorded", run.CIReadyAt, run.CIReadyNoCI)
+	if run.CIReadyAt != nil {
+		t.Fatal("release readiness must wait for atomic step completion")
+	}
+	if outcome.CIReadyNoCI == nil || !*outcome.CIReadyNoCI {
+		t.Fatal("no-CI verdict must request completion with declared readiness")
 	}
 	if !strings.Contains(strings.Join(logs, "\n"), cimonitor.NoChecksPassedCompleteMsg) {
 		t.Fatalf("logs = %v, want the declared no-CI release verdict", logs)

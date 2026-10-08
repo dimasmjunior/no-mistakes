@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -66,5 +69,62 @@ func TestOutcomeFor_ChecksPassedStatus(t *testing.T) {
 	}
 	if got := outcomeFor(string(types.RunCompleted)); got != "passed" {
 		t.Fatalf("outcomeFor(%s) = %q, want passed", types.RunCompleted, got)
+	}
+}
+
+func TestDriveRun_ReleaseAndWatchGuidance(t *testing.T) {
+	for _, watch := range []bool{false, true} {
+		t.Run(map[bool]string{false: "release", true: "watch"}[watch], func(t *testing.T) {
+			firstEvents := make(chan ipc.Event)
+			close(firstEvents)
+			secondEvents := make(chan ipc.Event)
+			close(secondEvents)
+			source := &scriptedRunStateSource{
+				subscriptions: []scriptedSubscription{{events: firstEvents}, {events: secondEvents}, {events: make(chan ipc.Event)}},
+				runs: []*ipc.RunInfo{
+					{ID: "run-1", Status: types.RunRunning, CIReady: watch, Steps: []ipc.StepResultInfo{{StepName: types.StepCI, Status: types.StepStatusRunning}}},
+					{ID: "run-1", Status: types.RunRunning, CIReady: true, Steps: []ipc.StepResultInfo{{StepName: types.StepCI, Status: types.StepStatusCompleted}}},
+					{ID: "run-1", Status: types.RunChecksPassed, CIReady: true, Steps: []ipc.StepResultInfo{{StepName: types.StepCI, Status: types.StepStatusCompleted}}},
+				},
+			}
+			reconciler := newRunReconciler(source, "run-1")
+			defer reconciler.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			run, ready, err := driveRunWithReconciler(ctx, io.Discard, nil, reconciler, "run-1", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ready != watch {
+				t.Fatalf("live-monitor stop = %v, want %v", ready, watch)
+			}
+			if !watch && run.Status != types.RunChecksPassed {
+				t.Fatalf("release stopped before terminal completion: %s", run.Status)
+			}
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&out)
+			if err := renderDriveResult(cmd, run, ready); err != nil {
+				t.Fatal(err)
+			}
+			if watch {
+				if !strings.Contains(out.String(), "the CI monitor rebases onto the base") || strings.Contains(out.String(), "nothing is left watching the PR") {
+					t.Fatalf("wrong watch guidance: %s", &out)
+				}
+			} else if !strings.Contains(out.String(), "nothing is left watching the PR") || strings.Contains(out.String(), "the CI monitor rebases onto the base") {
+				t.Fatalf("wrong release guidance: %s", &out)
+			}
+		})
+	}
+}
+
+func TestOutcomeForRun_ChecksPassedOverrides(t *testing.T) {
+	for _, rv := range []runView{
+		{Status: string(types.RunChecksPassed), TestOverrideReason: "approved Test exception"},
+		{Status: string(types.RunChecksPassed), CIOverrideReason: "approved CI exception"},
+	} {
+		if got := outcomeForRun(rv); got != "passed-with-override" {
+			t.Fatalf("outcome = %s", got)
+		}
 	}
 }
