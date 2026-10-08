@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -9,25 +11,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// releasingCIStep stands in for the CI step's terminal green verdict. It
-// records exactly the durable state that step leaves behind when it releases a
-// run - CI readiness and the open PR it observed - and returns a plain success
-// outcome, which is what makes the CI step the last step of the run.
-type releasingCIStep struct{}
+type releasingCIStep struct{ declaredNoCI bool }
 
 func (releasingCIStep) Name() types.StepName { return types.StepCI }
 
-func (releasingCIStep) Execute(sctx *StepContext) (*StepOutcome, error) {
-	if err := sctx.DB.SetRunCIReadyWithReason(sctx.Run.ID, true, false); err != nil {
-		return nil, err
-	}
+func (s releasingCIStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
 		return nil, err
 	}
-	if sctx.CIReadinessChanged != nil {
-		sctx.CIReadinessChanged(true, false)
-	}
-	return &StepOutcome{}, nil
+	declaredNoCI := s.declaredNoCI
+	return &StepOutcome{CIReadyNoCI: &declaredNoCI}, nil
 }
 
 // ciStepSnapshot is the recorded CI step state a terminal run must keep: its
@@ -151,4 +144,106 @@ func (mergedCIStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 		return nil, err
 	}
 	return &StepOutcome{}, nil
+}
+
+func TestExecutor_CIReadinessWriteFailureFailsRun(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	raw, err := sql.Open("sqlite", p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TRIGGER reject_readiness BEFORE UPDATE OF ci_ready_at ON runs WHEN NEW.ci_ready_at IS NOT NULL BEGIN SELECT RAISE(FAIL, 'injected readiness failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	events := &eventCollector{}
+	exec := NewExecutor(database, p, nil, nil, []Step{releasingCIStep{}}, events.handler)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil || !strings.Contains(err.Error(), "injected readiness failure") {
+		t.Fatalf("Execute = %v", err)
+	}
+	assertDurableFailedRunAndEvent(t, database, run.ID, events)
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CIReadyAt != nil {
+		t.Fatal("failed completion persisted readiness")
+	}
+	if step := ciStepSnapshot(t, database, run.ID); step.status == string(types.StepStatusCompleted) {
+		t.Fatal("readiness failure left CI completed")
+	}
+}
+
+func TestExecutor_TerminalVerdictReadErrors(t *testing.T) {
+	for _, target := range []string{"runs", "step_results"} {
+		t.Run(target, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			if err := database.UpdateRunPRState(run.ID, "open"); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.SetRunCIReady(run.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := sql.Open("sqlite", p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			if _, err := raw.Exec("ALTER TABLE " + target + " RENAME TO unavailable"); err != nil {
+				t.Fatal(err)
+			}
+			events := &eventCollector{}
+			exec := NewExecutor(database, p, nil, nil, nil, events.handler)
+			if err := exec.completeRun(run, repo); err == nil {
+				t.Fatal("unreadable verdict evidence reported success")
+			}
+			if events.findRunEvent(ipc.EventRunCompleted) != nil {
+				t.Fatal("unreadable evidence emitted completion")
+			}
+		})
+	}
+}
+
+func TestExecutor_CIReleaseReadinessFollowsStepCompletion(t *testing.T) {
+	for _, declaredNoCI := range []bool{false, true} {
+		t.Run(map[bool]string{false: "checks", true: "declared-no-ci"}[declaredNoCI], func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			completedEvent := false
+			readyEvent := false
+			exec := NewExecutor(database, p, nil, nil, []Step{releasingCIStep{declaredNoCI: declaredNoCI}}, func(event ipc.Event) {
+				if event.Type == ipc.EventStepCompleted && event.StepName != nil && *event.StepName == types.StepCI {
+					completedEvent = true
+				}
+				if event.CIReady != nil && *event.CIReady {
+					readyEvent = true
+					if !completedEvent {
+						t.Error("live readiness event preceded CI completion")
+					}
+					if event.CIReadyNoCI == nil || *event.CIReadyNoCI != declaredNoCI {
+						t.Error("readiness event lost declaration")
+					}
+				}
+				stored, err := database.GetRun(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.CIReadyAt != nil && ciStepSnapshot(t, database, run.ID).status != string(types.StepStatusCompleted) {
+					t.Error("persisted readiness exposed an active release step")
+				}
+			})
+			if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			if !readyEvent {
+				t.Fatal("completed CI did not publish readiness")
+			}
+			stored, err := database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Status != types.RunChecksPassed || stored.CIReadyAt == nil || stored.CIReadyNoCI != declaredNoCI {
+				t.Fatalf("lost durable release verdict: %+v", stored)
+			}
+		})
+	}
 }

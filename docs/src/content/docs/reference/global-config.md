@@ -585,7 +585,7 @@ Whether the CI step keeps monitoring the pull request after every check is green
 `false` (the default): the green observation is the CI step's verdict.
 The step records readiness and finishes, so the run completes as `checks_passed` and releases its worktree and its lane instead of holding both open for a merge it does not own.
 `no-mistakes axi` reports `outcome: checks-passed`, the TUI reports `✓ Checks passed - PR ready to merge`, and the recorded CI duration measures CI only, because nothing waits on the merge.
-Whether and when a human merges the PR is then observed outside this run - a later merge is still recorded on the run as PR state, but it never changes the outcome the run recorded.
+The released run does not observe or record a later merge. If merge evidence is independently persisted on the run, it changes only PR state, never the recorded outcome. `eval relabel` and recapture use that persisted evidence; neither fetches forge state.
 
 `true`: restores the older watch.
 The run stays active and keeps polling the PR until it is merged, closed, or declined, bounded by [`ci_timeout`](#ci_timeout).

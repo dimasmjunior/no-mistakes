@@ -1248,6 +1248,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	var skipReason string
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
+	var ciReadyNoCIOnCompletion *bool
 	var restartFrom types.StepName
 
 	// Execute with possible fix loop
@@ -1427,6 +1428,7 @@ rounds:
 			// Step completed without needing approval.
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
+			ciReadyNoCIOnCompletion = outcome.CIReadyNoCI
 			skipRemaining = outcome.SkipRemaining
 			stepSkipped = outcome.Skipped
 			skipReason = safeurl.RedactText(outcome.SkipReason)
@@ -1645,6 +1647,10 @@ done:
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+	} else if stepName == types.StepCI && !stepSkipped && ciReadyNoCIOnCompletion != nil {
+		if err := e.db.CompleteCIStep(sr.ID, run.ID, *ciReadyNoCIOnCompletion, finalExitCode, durationMS, logPath); err != nil {
+			return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
+		}
 	} else if stepSkipped {
 		if err := e.db.CompleteSkippedStep(sr.ID, finalExitCode, durationMS, logPath, skipReason); err != nil {
 			return false, "", fmt.Errorf("complete skipped step %s: %w", stepName, err)
@@ -1653,6 +1659,9 @@ done:
 		return false, "", fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
+	if stepName == types.StepCI && !stepSkipped && ciReadyNoCIOnCompletion != nil {
+		ciReadinessChanged(true, *ciReadyNoCIOnCompletion)
+	}
 	return skipRemaining, restartFrom, nil
 }
 
@@ -2147,9 +2156,11 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 }
 
 func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
-	status := e.terminalRunStatus(run)
+	status, err := e.terminalRunStatus(run)
+	if err != nil {
+		return err
+	}
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
-	var err error
 	if verified {
 		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, status, verifiedHead)
 	} else {
@@ -2181,42 +2192,40 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 // step, a PR state the run observed, and a CI step that completed rather than
 // being skipped. A merged or closed PR, an unknown PR state, a run that never
 // established readiness, and a skipped CI step all stay an ordinary completion.
-func (e *Executor) terminalRunStatus(run *db.Run) types.RunStatus {
+func (e *Executor) terminalRunStatus(run *db.Run) (types.RunStatus, error) {
 	if run == nil {
-		return types.RunCompleted
+		return "", fmt.Errorf("cannot complete a nil run")
 	}
 	recorded, err := e.db.GetRun(run.ID)
 	if err != nil {
-		slog.Warn("failed to read run before recording its terminal status", "run", run.ID, "error", err)
-		return types.RunCompleted
+		return "", fmt.Errorf("read run before recording terminal status: %w", err)
 	}
 	if recorded == nil {
-		return types.RunCompleted
+		return "", fmt.Errorf("cannot complete missing run %s", run.ID)
 	}
 	if recorded.CIReadyAt == nil {
-		return types.RunCompleted
+		return types.RunCompleted, nil
 	}
 	prState := ""
 	if recorded.PRState != nil {
 		prState = strings.ToLower(strings.TrimSpace(*recorded.PRState))
 	}
 	if prState != "open" {
-		return types.RunCompleted
+		return types.RunCompleted, nil
 	}
 	steps, err := e.db.GetStepsByRun(recorded.ID)
 	if err != nil {
-		slog.Warn("failed to read steps before recording the run's terminal status", "run", run.ID, "error", err)
-		return types.RunCompleted
+		return "", fmt.Errorf("read steps before recording terminal status: %w", err)
 	}
 	for _, step := range steps {
 		if step.StepName != types.StepCI {
 			continue
 		}
 		if step.Status == types.StepStatusCompleted {
-			return types.RunChecksPassed
+			return types.RunChecksPassed, nil
 		}
 	}
-	return types.RunCompleted
+	return types.RunCompleted, nil
 }
 
 func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {

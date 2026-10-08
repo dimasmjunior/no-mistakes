@@ -133,8 +133,11 @@ func outcomeFor(status string) string {
 // or whose publication/verification automatically skipped. Explicit per-run
 // skips carry no automatic cause and retain their existing outcome.
 func outcomeForRun(rv runView) string {
-	word := outcomeFor(rv.Status)
-	if word == "passed" && (rv.CIOverrideReason != "" || rv.TestOverrideReason != "") {
+	return qualifyOutcome(outcomeFor(rv.Status), rv)
+}
+
+func qualifyOutcome(word string, rv runView) string {
+	if (word == "passed" || word == "checks-passed") && (rv.CIOverrideReason != "" || rv.TestOverrideReason != "") {
 		return "passed-with-override"
 	}
 	if word == "passed" && len(rv.automaticSkips()) > 0 {
@@ -1374,7 +1377,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 	// agent stops and asks the user to review and merge instead of waiting.
 	if ciReady {
 		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
-		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
+		fields = append(fields, toon.Field{Key: "outcome", Value: qualifyOutcome("checks-passed", rv)})
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		help := append([]string{checksPassedMergeLine(rv, activity)}, successReportHelp(fixes)...)
@@ -1395,7 +1398,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 	// released contract instead of the still-monitoring one.
 	if rv.Status == string(types.RunChecksPassed) {
 		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
-		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
+		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeForRun(rv)})
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		help := append([]string{checksPassedMergeLine(rv, activity)}, successReportHelp(fixes)...)

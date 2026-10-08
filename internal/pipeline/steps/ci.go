@@ -819,22 +819,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					}
 					sctx.DeferredFindings = ""
 					declaredNoCI := len(checks) == 0
-					// A green observation IS the step's verdict by default: the
-					// step records readiness and finishes, so the run completes
-					// and releases its worktree and lane instead of holding both
-					// open for a merge decision it neither owns nor observes.
-					// The optional ci_monitor_until_merged watch restores the
-					// historical behavior, where the same observation only
-					// clears the failure signal and polling continues until the
-					// PR is merged, closed, or ci_timeout elapses.
 					if !monitorUntilMerged {
 						completeMsg := ciChecksPassedCompleteMsg
 						if declaredNoCI {
 							completeMsg = ciNoChecksPassedCompleteMsg
 						}
-						lastMonitorLog = logCIMonitorStatus(sctx, completeMsg, lastMonitorLog)
+						sctx.Log(completeMsg)
 						sctx.Log("validation complete: releasing the run now; the PR is ready for a human to merge")
-						return &pipeline.StepOutcome{}, nil
+						return &pipeline.StepOutcome{CIReadyNoCI: &declaredNoCI}, nil
 					}
 					passedMsg := ciChecksPassedMsg
 					if declaredNoCI {
@@ -880,16 +872,11 @@ func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) st
 	return message
 }
 
-// ciReadyMessage reports whether a monitor status line states that CI readiness
-// is established, and whether that readiness is backed by the trusted
-// default-branch no_ci declaration rather than observed green checks. Both the
-// release verdict and the opt-in watch's line state readiness; only the
-// declared-no-CI pair carries the declaration.
 func ciReadyMessage(message string) (ready, declaredNoCI bool) {
 	switch message {
-	case ciChecksPassedMsg, ciChecksPassedCompleteMsg:
+	case ciChecksPassedMsg:
 		return true, false
-	case ciNoChecksPassedMsg, ciNoChecksPassedCompleteMsg:
+	case ciNoChecksPassedMsg:
 		return true, true
 	default:
 		return false, false
