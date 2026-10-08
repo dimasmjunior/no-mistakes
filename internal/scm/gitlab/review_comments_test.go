@@ -228,3 +228,42 @@ func TestProjectPathFromMRURL(t *testing.T) {
 		})
 	}
 }
+
+// The discussions API contract requires array pages, including [] for no
+// discussions. A successful CLI exit alone must not certify an unread payload.
+func TestGetReviewCommentsRequiresDiscussionArrays(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		payload   string
+		wantError bool
+	}{
+		{"empty array", "[]", false},
+		{"empty pages", "[]\n[]", false},
+		{"empty output", "", true},
+		{"whitespace", " \r\n", true},
+		{"null", "null", true},
+		{"non JSON", "request failed", true},
+		{"object", "{}", true},
+		{"scalar", "42", true},
+		{"null page", "[]\nnull", true},
+		{"trailing text", "[]\nfailed", true},
+		{"prefix text", "failed\n[]", true},
+		{"null discussion", "[null]", true},
+		{"missing discussion fields", "[{}]", true},
+		{"wrong notes shape", `[{"id":"d1","notes":{}}]`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+				"glab api --paginate projects/group%2Fproject/merge_requests/123/discussions?per_page=100": {stdout: tc.payload},
+			}), nil, "", "group/project")
+			comments, err := host.GetReviewComments(context.Background(), &scm.PR{Number: "123"})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("GetReviewComments() = %v, %v; want error %v", comments, err, tc.wantError)
+			}
+			if len(comments) != 0 {
+				t.Fatalf("comments = %v, want no comments", comments)
+			}
+		})
+	}
+}

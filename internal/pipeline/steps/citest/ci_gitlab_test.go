@@ -377,3 +377,67 @@ func TestCIStep_GitLabReviewBotDiscussionCommentsParkUnderAlways(t *testing.T) {
 		t.Fatalf("logs = %v, checks-passed must not be reported over an unresolved bot comment", logs)
 	}
 }
+
+// Under the always policy, only a successfully read empty discussion array
+// permits readiness. Invalid provider output must park without checks-passed.
+func TestCIStep_GitLabDiscussionReadRequiresValidArray(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		payload string
+		valid   bool
+	}{
+		{"empty array", "[]", true},
+		{"blank output", " \r\n", false},
+		{"null", "null", false},
+		{"non JSON", "request failed", false},
+		{"object", "{}", false},
+		{"invalid later page", "[]\nnull", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+			env := stepstest.FakeCIGlabWithReviewComments(t, "opened",
+				`[{"id":1,"name":"build","status":"success"}]`, tc.payload)
+			prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+			sctx := stepstest.NewTestContext(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+			sctx.Run.PRURL = &prURL
+			sctx.Config.CI.ReviewBotComments = config.CIReviewBotCommentsAlways
+			var logs []string
+			sctx.Log = func(s string) { logs = append(logs, s) }
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sctx.Ctx = ctx
+			polls := 0
+			step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+				polls++
+				if tc.valid || polls > 10 {
+					cancel()
+					return ctx.Err()
+				}
+				return nil
+			})
+			pinCIMonitorClock(step)
+			outcome, err := step.Execute(sctx)
+			passed := strings.Contains(strings.Join(logs, "\n"), "all CI checks passed")
+			if tc.valid {
+				if !errors.Is(err, context.Canceled) || !passed {
+					t.Fatalf("valid empty array: error = %v, logs = %v", err, logs)
+				}
+				return
+			}
+			if err != nil || outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable || passed {
+				t.Fatalf("unreadable discussions: outcome = %#v, error = %v, logs = %v", outcome, err, logs)
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil || len(findings.Items) != 1 {
+				t.Fatalf("findings = %+v, error = %v", findings, err)
+			}
+			if item := findings.Items[0]; item.Action != types.ActionAskUser || !strings.Contains(item.Description, "could not be read") {
+				t.Fatalf("finding = %+v, want ask-user read failure", item)
+			}
+		})
+	}
+}

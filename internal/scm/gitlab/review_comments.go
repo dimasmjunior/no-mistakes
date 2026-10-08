@@ -215,9 +215,9 @@ func (h *Host) reviewCommentTarget(pr *scm.PR) (string, int, error) {
 // empty result: an unreadable page must never look like "no unresolved
 // comments".
 func decodeGitlabDiscussions(out []byte) ([]gitlabDiscussion, error) {
-	trimmed := bytesTrimToJSON(out)
+	trimmed := bytes.TrimSpace(out)
 	if len(trimmed) == 0 {
-		return nil, nil
+		return nil, errors.New("decode gitlab discussions: expected a discussion array")
 	}
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	var discussions []gitlabDiscussion
@@ -233,6 +233,14 @@ func decodeGitlabDiscussions(out []byte) ([]gitlabDiscussion, error) {
 		var page []gitlabDiscussion
 		if err := json.Unmarshal(raw, &page); err != nil {
 			return nil, fmt.Errorf("decode gitlab discussions: %w", err)
+		}
+		if page == nil {
+			return nil, errors.New("decode gitlab discussions: expected a discussion array")
+		}
+		for _, discussion := range page {
+			if discussion.ID == "" || discussion.Notes == nil {
+				return nil, errors.New("decode gitlab discussions: expected a discussion with id and notes array")
+			}
 		}
 		discussions = append(discussions, page...)
 	}
