@@ -31,6 +31,21 @@ var canonicalStaleMonitorPhrases = []string{
 	"no-mistakes rerun",
 }
 
+// canonicalReleasedChecksPassedPhrases are the load-bearing claims of the
+// DEFAULT green verdict's guidance: the run finished and released the branch,
+// nothing is watching the PR, a later update is a fresh run rather than this
+// run's repair, and the opt-in watch is the only thing that keeps monitoring.
+// They are deliberately disjoint from the still-monitor phrases above so the
+// two contracts cannot be conflated: the released guidance never claims a live
+// monitor, and the still-monitor guidance is emitted only under the watch.
+var canonicalReleasedChecksPassedPhrases = []string{
+	"released",
+	"nothing is left watching the PR",
+	"will not rebase or re-push it",
+	"a fresh `no-mistakes axi run`",
+	"ci_monitor_until_merged",
+}
+
 var canonicalRerunRecoveryPhrases = []string{
 	"known clean caller",
 	"selected",
@@ -91,6 +106,29 @@ func TestStaleMonitorGuidance_SyncedAcrossSurfaces(t *testing.T) {
 				t.Errorf("%s is missing rerun recovery guidance %q", name, phrase)
 			}
 		}
+	}
+}
+
+// TestReleasedChecksPassedGuidance_SyncedAcrossSurfaces guards the same
+// three-surface invariant as the still-monitor guidance, for the default
+// verdict: the skill body, the published agents guide, and the live axi help
+// string must all tell an agent reading `checks-passed` from a released run
+// that nothing is watching the PR and that a later update is a fresh run.
+func TestReleasedChecksPassedGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":      skill.Markdown(),
+		"agents guide":    readAgentsGuide(t),
+		"axi help string": releasedChecksPassedGuidance,
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalReleasedChecksPassedPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing the released checks-passed guidance phrase %q", name, phrase)
+			}
+		}
+	}
+	if strings.Contains(releasedChecksPassedGuidance, "rebases onto the base") {
+		t.Error("the released guidance must not promise a live monitor")
 	}
 }
 
