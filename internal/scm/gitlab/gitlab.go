@@ -470,27 +470,60 @@ func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, 
 	if err != nil {
 		return nil, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
 	}
-	var payload struct {
-		HeadPipeline struct {
-			ID int `json:"id"`
-		} `json:"head_pipeline"`
-	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
 		return nil, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
+	var payload struct {
+		HeadPipeline json.RawMessage `json:"head_pipeline"`
+	}
 	if err := json.Unmarshal(trimmed, &payload); err != nil {
 		return nil, fmt.Errorf("glab mr view: invalid JSON output: %s", strings.TrimSpace(string(out)))
 	}
-	if payload.HeadPipeline.ID == 0 {
+	pipelineID, err := headPipelineID(payload.HeadPipeline)
+	if err != nil {
+		return nil, fmt.Errorf("glab mr view: %w", err)
+	}
+	if pipelineID == 0 {
+		// The MR reports "head_pipeline": null, meaning it has no pipeline.
+		// That is the only shape that reads as no checks; headPipelineID
+		// rejects the rest.
 		return nil, nil
 	}
-	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(payload.HeadPipeline.ID)...)
+	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(pipelineID)...)
 	jobsOut, err := jobsCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab pipeline jobs: %s: %w", strings.TrimSpace(string(jobsOut)), err)
 	}
 	return parseGitlabJobs(jobsOut)
+}
+
+// headPipelineID returns the ID in the merge request payload's
+// "head_pipeline" field. GitLab sends `"head_pipeline": null` when the MR has
+// no pipeline; that returns 0 with no error, and the caller reads it as no
+// checks. Every other value without a positive numeric ID is an error: a
+// payload without the field, a value that is not an object, or an ID that is
+// missing, null, or not positive. Reading those as zero checks would make an
+// unexpected response look like an empty pipeline, and a trusted
+// `no_ci: true` would then report a false no-CI result.
+func headPipelineID(raw json.RawMessage) (int, error) {
+	if len(raw) == 0 {
+		return 0, errors.New(`response has no "head_pipeline" field`)
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return 0, nil
+	}
+	var pipeline struct {
+		ID *int64 `json:"id"`
+	}
+	if err := json.Unmarshal(trimmed, &pipeline); err != nil {
+		return 0, fmt.Errorf("cannot read head_pipeline %.200s: %w", trimmed, err)
+	}
+	if pipeline.ID == nil || *pipeline.ID <= 0 {
+		return 0, fmt.Errorf("head_pipeline has no positive ID: %.200s", trimmed)
+	}
+	return int(*pipeline.ID), nil
 }
 
 func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
@@ -617,14 +650,19 @@ func (j gitlabJob) completedAt() time.Time {
 // `glab api --paginate` walks multiple pages - several JSON documents
 // concatenated back to back (one array per page). A streaming decoder reads
 // each top-level value in turn and accumulates the jobs across all of them.
-// It returns whatever was parsed plus a non-nil error when a document was
-// malformed: io.EOF terminates the stream cleanly, but any other decode error
-// means a corrupt page, which the caller can surface instead of mistaking it
-// for an empty result.
+//
+// Every page must read in full. Output with no JSON, a document that is
+// neither a job array nor a pipeline object with a "jobs" field, and a job
+// entry without a name or status each return an error. GitLab always sends
+// both fields, so a document without them is not a job listing. Skipping such
+// a page would hide any failed job on it, and an unreadable response would
+// read as an empty, green pipeline. io.EOF ends the stream cleanly; when a
+// later page is malformed or the wrong shape, the jobs from earlier pages are
+// returned along with the error.
 func decodeGitlabJobs(out []byte) ([]gitlabJob, error) {
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return nil, nil
+		return nil, errors.New("decode gitlab jobs: response contained no JSON")
 	}
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	var jobs []gitlabJob
@@ -639,18 +677,68 @@ func decodeGitlabJobs(out []byte) ([]gitlabJob, error) {
 			// and report the error rather than silently swallowing the page.
 			return jobs, fmt.Errorf("decode gitlab jobs: %w", err)
 		}
-		var asArray []gitlabJob
-		if err := json.Unmarshal(raw, &asArray); err == nil && len(asArray) > 0 {
-			jobs = append(jobs, asArray...)
-			continue
+		page, err := decodeGitlabJobPage(raw)
+		if err != nil {
+			return jobs, err
 		}
-		var asObject struct {
-			Jobs []gitlabJob `json:"jobs"`
-		}
-		if err := json.Unmarshal(raw, &asObject); err == nil && len(asObject.Jobs) > 0 {
-			jobs = append(jobs, asObject.Jobs...)
-		}
+		jobs = append(jobs, page...)
 	}
+}
+
+// decodeGitlabJobPage reads one top-level JSON document from glab output:
+// either a bare array of jobs (`glab api --paginate`) or a pipeline object
+// with a "jobs" array, or null for a pipeline with no jobs
+// (`glab ci get --with-job-details`). Every entry must be a job object with a
+// non-empty name and status, or the read fails.
+func decodeGitlabJobPage(raw json.RawMessage) ([]gitlabJob, error) {
+	trimmed := bytes.TrimSpace(raw)
+	var entries []json.RawMessage
+	switch {
+	case len(trimmed) > 0 && trimmed[0] == '[':
+		if err := json.Unmarshal(trimmed, &entries); err != nil {
+			return nil, fmt.Errorf("decode gitlab jobs: %w", err)
+		}
+	case len(trimmed) > 0 && trimmed[0] == '{':
+		var page struct {
+			Jobs json.RawMessage `json:"jobs"`
+		}
+		if err := json.Unmarshal(trimmed, &page); err != nil {
+			return nil, fmt.Errorf("decode gitlab jobs: %w", err)
+		}
+		pageJobs := bytes.TrimSpace(page.Jobs)
+		if len(pageJobs) == 0 {
+			return nil, errors.New(`decode gitlab jobs: pipeline object has no "jobs" field`)
+		}
+		// glab builds this object's job list with client-go's ScanAndCollect,
+		// which returns a nil slice for a pipeline with no jobs, and its
+		// PrintJSON turns only a top-level nil slice into []. A pipeline with
+		// no jobs therefore prints a present "jobs": null here, the same empty
+		// listing the REST route reports as []. Only a missing key is
+		// unreadable.
+		if bytes.Equal(pageJobs, []byte("null")) {
+			return nil, nil
+		}
+		if err := json.Unmarshal(pageJobs, &entries); err != nil {
+			return nil, fmt.Errorf(`decode gitlab jobs: "jobs" is not an array: %w`, err)
+		}
+	default:
+		return nil, fmt.Errorf("decode gitlab jobs: page is neither a job array nor a pipeline object: %.80s", trimmed)
+	}
+	jobs := make([]gitlabJob, 0, len(entries))
+	for _, entry := range entries {
+		var job gitlabJob
+		if err := json.Unmarshal(entry, &job); err != nil {
+			return nil, fmt.Errorf("decode gitlab jobs: %w", err)
+		}
+		if strings.TrimSpace(job.Name) == "" {
+			return nil, errors.New("decode gitlab jobs: job entry has no name")
+		}
+		if strings.TrimSpace(job.Status) == "" {
+			return nil, fmt.Errorf("decode gitlab jobs: job %q has no status", job.Name)
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
 }
 
 func parseGitlabJobs(out []byte) ([]scm.Check, error) {

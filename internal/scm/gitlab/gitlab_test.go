@@ -866,6 +866,157 @@ func TestGetChecksSurfacesErrorWhenPaginatedPageIsCorrupt(t *testing.T) {
 	}
 }
 
+func TestGetChecksRejectsUnreadableJobs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{"no JSON", "not JSON"},
+		{"empty output", ""},
+		{"missing jobs", `{}`},
+		{"null response", `null`},
+		{"scalar response", `true`},
+		{"object jobs", `{"jobs":{}}`},
+		{"string jobs", `{"jobs":"unavailable"}`},
+		{"null job", `[null]`},
+		{"missing job name", `[{"status":"success"}]`},
+		{"missing job status", `[{"name":"build"}]`},
+		{"wrong job field type", `[{"name":"build","status":true}]`},
+		{"wrong second page", `[{"name":"build","status":"success"}]` + "\n{}"},
+		{"null second page", `[{"name":"build","status":"success"}]` + "\nnull"},
+		{"wrong page after empty page", "[]\n{}"},
+	}
+	for _, route := range []string{"primary", "REST fallback", "CLI fallback"} {
+		t.Run(route, func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					responses := map[string]gitlabTestResponse{
+						"glab ci status --mr 123 --output json": {stdout: tt.output},
+					}
+					projectPath := ""
+					if route != "primary" {
+						responses["glab ci status --mr 123 --output json"] = gitlabTestResponse{stderr: "unknown flag: --mr\n", code: 1}
+						responses["glab mr view 123 --output json"] = gitlabTestResponse{stdout: `{"head_pipeline":{"id":77}}`}
+						jobsCommand := "glab ci get --pipeline-id 77 --output json --with-job-details"
+						if route == "REST fallback" {
+							projectPath = "group/project"
+							jobsCommand = "glab api --paginate projects/group%2Fproject/pipelines/77/jobs"
+						}
+						responses[jobsCommand] = gitlabTestResponse{stdout: tt.output}
+					}
+					host := New(gitlabTestCmdFactory(responses), nil, "", projectPath)
+					checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+					if err == nil {
+						t.Fatalf("GetChecks() = (%+v, nil), want a read error for %q", checks, tt.output)
+					}
+					if !strings.Contains(err.Error(), "decode gitlab jobs") {
+						t.Fatalf("GetChecks() error = %v, want a jobs read error for %q", err, tt.output)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestGetChecksRequiresExplicitPipelineMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{"missing pipeline", `{}`},
+		{"missing pipeline ID", `{"head_pipeline":{}}`},
+		{"null pipeline ID", `{"head_pipeline":{"id":null}}`},
+		{"zero pipeline ID", `{"head_pipeline":{"id":0}}`},
+		{"negative pipeline ID", `{"head_pipeline":{"id":-1}}`},
+		{"wrong pipeline ID type", `{"head_pipeline":{"id":"77"}}`},
+		{"wrong pipeline shape", `{"head_pipeline":[]}`},
+		{"null MR", `null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+				"glab ci status --mr 123 --output json": {stderr: "unknown flag: --mr\n", code: 1},
+				"glab mr view 123 --output json":        {stdout: tt.output},
+				// The old code passed a negative ID on to the jobs reader. Give
+				// that call a successful answer, so the test fails unless the ID
+				// itself is refused.
+				"glab ci get --pipeline-id -1 --output json --with-job-details": {stdout: `[]`},
+			}), nil, "", "")
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if err == nil {
+				t.Fatalf("GetChecks() = (%+v, nil), want a read error for %q", checks, tt.output)
+			}
+			// A `null` MR document fails before the field parse, so the
+			// invalid-JSON marker counts too. Both exclude the fake's
+			// unmapped-command error, which is what this guard is for.
+			if !strings.Contains(err.Error(), "head_pipeline") && !strings.Contains(err.Error(), "invalid JSON output") {
+				t.Fatalf("GetChecks() error = %v, want a head_pipeline read error for %q", err, tt.output)
+			}
+			if checks != nil {
+				t.Fatalf("GetChecks() checks = %+v, want nil for invalid pipeline metadata", checks)
+			}
+		})
+	}
+}
+
+func TestGetChecksAcceptsExplicitEmptyResults(t *testing.T) {
+	t.Parallel()
+
+	outputs := []string{
+		`[]`,
+		`{"jobs":[]}`,
+		"[]\n{\"jobs\":[]}",
+		// What glab 1.114 prints for a pipeline with no jobs: `ci get` and
+		// `ci status --output json` marshal a nil job slice as null.
+		`{"id":77,"status":"failed","jobs":null}`,
+		`{"pipeline":{"id":77,"status":"failed"},"jobs":null}`,
+	}
+	for _, route := range []string{"primary", "REST fallback", "CLI fallback"} {
+		for _, output := range outputs {
+			t.Run(route+"/"+output, func(t *testing.T) {
+				t.Parallel()
+				responses := map[string]gitlabTestResponse{
+					"glab ci status --mr 123 --output json": {stdout: output},
+				}
+				projectPath := ""
+				if route != "primary" {
+					responses["glab ci status --mr 123 --output json"] = gitlabTestResponse{stderr: "unknown flag: --mr\n", code: 1}
+					responses["glab mr view 123 --output json"] = gitlabTestResponse{stdout: `{"head_pipeline":{"id":77}}`}
+					jobsCommand := "glab ci get --pipeline-id 77 --output json --with-job-details"
+					if route == "REST fallback" {
+						projectPath = "group/project"
+						jobsCommand = "glab api --paginate projects/group%2Fproject/pipelines/77/jobs"
+					}
+					responses[jobsCommand] = gitlabTestResponse{stdout: output}
+				}
+				host := New(gitlabTestCmdFactory(responses), nil, "", projectPath)
+				checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+				if err != nil || len(checks) != 0 {
+					t.Fatalf("GetChecks() = (%+v, %v), want an explicitly empty check list", checks, err)
+				}
+			})
+		}
+	}
+	t.Run("absent pipeline", func(t *testing.T) {
+		t.Parallel()
+		host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+			"glab ci status --mr 123 --output json": {stderr: "unknown flag: --mr\n", code: 1},
+			"glab mr view 123 --output json":        {stdout: `{"head_pipeline":null}`},
+		}), nil, "", "")
+		checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+		if err != nil || len(checks) != 0 {
+			t.Fatalf("GetChecks() = (%+v, %v), want an explicitly absent pipeline", checks, err)
+		}
+	})
+}
+
 type gitlabTestResponse struct {
 	stdout string
 	stderr string
