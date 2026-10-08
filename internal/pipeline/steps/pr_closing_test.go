@@ -376,6 +376,9 @@ func TestNeutralizeGitLabClosingReferences(t *testing.T) {
 		{"issues prefix", "Closes issues #12", `Closes issues \#12`},
 		{"nested project path", "Closes group/subgroup/project#12", `Closes group/subgroup/project\#12`},
 		{"issue url", "Closes https://gitlab.example.com/group/project/-/issues/12", `Closes https\://gitlab.example.com/group/project/-/issues/12`},
+		{"project work item url", "Closes https://gitlab.example.com/group/project/-/work_items/12", `Closes https\://gitlab.example.com/group/project/-/work_items/12`},
+		{"group work item url", "Closes https://gitlab.example.com/groups/group/subgroup/-/work_items/12", `Closes https\://gitlab.example.com/groups/group/subgroup/-/work_items/12`},
+		{"fenced work item url", "```\nCloses https://gitlab.com/group/project/-/work_items/12\n```", "```\nCloses https\\://gitlab.com/group/project/-/work_items/12\n```"},
 		{"inside a fenced block", "```text\nFixes #12\n```", "```text\nFixes \\#12\n```"},
 		{"inside an indented block", "    Closes #12", `    Closes \#12`},
 		{"a reference without a keyword", "Related to #12", "Related to #12"},
@@ -625,5 +628,30 @@ func TestPRStep_GitHubClosesKeepsGitHubNeutralization(t *testing.T) {
 	// "Implements" is not a GitHub closing keyword, so it stays verbatim.
 	if !strings.Contains(body, "Implements #95") || strings.Contains(body, `Implements \#95`) {
 		t.Fatalf("GitHub body neutralization changed:\n%s", body)
+	}
+}
+
+func TestGitLabClosingCoverageRequiresLiteralSpaces(t *testing.T) {
+	for _, line := range []string{
+		"Closes\t#42", "Closes:\t#42", "Closes issues\t#42",
+		"Closes #1,\t#42", "Closes #1\tand #42", "Closes #1 and\t#42",
+		"Closes #1\t,#42", "Closes #1, and\t#42",
+	} {
+		t.Run(line, func(t *testing.T) {
+			sctx := gitlabClosingContext("42")
+			if got := issuesSection(sctx, line); got != "## Issues\n\nCloses #42" {
+				t.Fatalf("issuesSection(%q) = %q", line, got)
+			}
+			if err := verifyClosingIssuesInBody(line, sctx); err == nil {
+				t.Fatalf("verification accepted %q", line)
+			}
+			valid := strings.ReplaceAll(line, "\t", " ")
+			if got := issuesSection(sctx, valid); got != "" {
+				t.Fatalf("valid line %q not credited: %q", valid, got)
+			}
+			if err := verifyClosingIssuesInBody(valid, sctx); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

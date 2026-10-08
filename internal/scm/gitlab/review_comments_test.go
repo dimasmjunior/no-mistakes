@@ -40,6 +40,8 @@ func TestGetReviewCommentsReadsUnresolvedBotDiscussions(t *testing.T) {
 					{"id":1128,"body":"Already resolved","resolvable":true,"resolved":true,"author":{"username":"greptileai"},"position":{"new_path":"internal/app.go","new_line":44}}
 				]},
 				{"id":"d3","notes":[
+					{"id":1133,"body":"GitHub bot spelling","resolvable":true,"resolved":false,"author":{"username":"greptile-apps[bot]"}},
+					{"id":1134,"body":"GitHub app spelling","resolvable":true,"resolved":false,"author":{"username":"greptile-apps"}},
 					{"id":1129,"body":"A human review comment","resolvable":true,"resolved":false,"author":{"username":"octocat"},"position":{"new_path":"internal/app.go","new_line":45}}
 				]},
 				{"id":"d4","notes":[

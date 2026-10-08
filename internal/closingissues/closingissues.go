@@ -133,7 +133,10 @@ func validProjectPath(prefix string) bool {
 	if len(segments) < 2 {
 		return false
 	}
-	for _, segment := range segments {
+	for i, segment := range segments {
+		if i < len(segments)-1 && (strings.HasPrefix(segment, "-") || strings.HasSuffix(segment, "-")) {
+			return false
+		}
 		if !validProjectSegment(segment) {
 			return false
 		}
@@ -146,7 +149,7 @@ func validProjectPath(prefix string) bool {
 // segment - GitLab group and project paths alike - allows ".", "_" and "-"
 // inside it; a GitHub owner is a narrower case that rides on the same rule.
 func validProjectSegment(value string) bool {
-	if value == "" || value == "." || value == ".." || value[0] == '-' || value[len(value)-1] == '-' {
+	if value == "" || value == "." || value == ".." {
 		return false
 	}
 	for _, r := range value {

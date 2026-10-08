@@ -293,6 +293,7 @@ func TestCIStep_GreenReviewBotUnreadableCommentsParkUnderAlways(t *testing.T) {
 func TestCIObservationFindings_GreenReviewBotCommentsFollowThePolicy(t *testing.T) {
 	t.Parallel()
 	issues := ciIssues{
+		provider: scm.ProviderGitHub,
 		checks: []scm.Check{
 			{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE", App: "github-actions"},
 			{Name: "Greptile Review", Bucket: scm.CheckBucketPass, State: "SUCCESS", App: "greptile-apps"},

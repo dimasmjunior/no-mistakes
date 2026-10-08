@@ -71,7 +71,7 @@ var closingReferenceInTextPattern = regexp.MustCompile(`(?i)\b((?:close|closes|c
 // full "<host>/<path>/-/issues/12" URL are both closing references.
 const gitlabClosingKeywordPattern = `(?:[Cc]los(?:e[sd]?|ing)|[Ff]ix(?:e[sd]|ing)?|[Rr]esolv(?:e[sd]?|ing)|[Ii]mplement(?:s|ed|ing)?)`
 
-const gitlabClosingReferencePattern = `(?:https?://[^\s>]*/-/issues/[1-9][0-9]*|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9][0-9]*|#[1-9][0-9]*)`
+const gitlabClosingReferencePattern = `(?:https?://[^\s>]*/-/(?:issues|work_items)/[1-9][0-9]*|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9][0-9]*|#[1-9][0-9]*)`
 
 // gitlabClosingTargetPattern is the reference half of a closing-keyword line
 // without the URL form: a target is compared against the run's requested refs,
@@ -80,13 +80,13 @@ const gitlabClosingTargetPattern = `(?:[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9
 
 // gitlabClosingReferenceList accepts the separators GitLab's pattern allows
 // between several references ("Fixes #1, #2 and #3").
-const gitlabClosingReferenceList = gitlabClosingTargetPattern + `(?:(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+)` + gitlabClosingTargetPattern + `)*`
+const gitlabClosingReferenceList = gitlabClosingTargetPattern + `(?:(?: *, *(?:and +)?| +and +)` + gitlabClosingTargetPattern + `)*`
 
 // gitlabClosingSeparator is the keyword-to-reference separator: an optional
 // colon, at least one space (GitLab's pattern is a literal ` +`, so a newline
 // does not join a keyword to a reference), and GitLab's optional literal
 // "issues" - "Closes issues #12" closes #12 too.
-const gitlabClosingSeparator = `(?::?[ \t]+(?:issues?[ \t]+)?)`
+const gitlabClosingSeparator = `(?::? +(?:issues? +)?)`
 
 var gitlabClosingKeywordLinePattern = regexp.MustCompile(`^(?:(?:[-*+]|[0-9]+[.)])[ \t]+)?` + gitlabClosingKeywordPattern + gitlabClosingSeparator + gitlabClosingReferenceList + `[.;!]?$`)
 

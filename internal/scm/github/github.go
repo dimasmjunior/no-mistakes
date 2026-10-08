@@ -1508,7 +1508,7 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 				continue
 			}
 			for _, raw := range thread.Comments.Nodes {
-				if raw.Author == nil || !scm.IsReviewBotLogin(raw.Author.Login) {
+				if raw.Author == nil || !scm.IsReviewBotLogin(scm.ProviderGitHub, raw.Author.Login) {
 					continue
 				}
 				line := 0

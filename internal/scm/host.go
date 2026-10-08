@@ -215,21 +215,15 @@ type ReviewBot struct {
 	// AppSlug is the provider app slug the bot publishes its check under.
 	AppSlug string
 	// Logins are the account logins the bot posts review comments as.
-	Logins []string
+	Logins       []string
+	GitLabLogins []string
 }
 
 // ReviewBots is the registry of supported review bots. Both halves of the
 // integration - check identity and comment authorship - read it, so adding a
 // bot is one entry here.
-//
-// Identity is spelled per provider, and the spellings do not transfer. GitHub
-// identifies the bot by its App slug on the check suite and by the
-// "<app-slug>[bot]" login on its review comments. GitLab has neither: a job
-// names no publishing application, and the bot comments from an ordinary
-// account. Greptile's GitLab account is "greptileai" (gitlab.com/greptileai),
-// which is why the comment half carries that login as well.
 var ReviewBots = []ReviewBot{
-	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps", "greptileai"}},
+	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}, GitLabLogins: []string{"greptileai"}},
 }
 
 // ReviewBotForApp returns the registered review bot that publishes checks
@@ -250,13 +244,20 @@ func ReviewBotForApp(slug string) (ReviewBot, bool) {
 
 // ReviewBotForLogin returns the registered review bot that posts review
 // comments as login.
-func ReviewBotForLogin(login string) (ReviewBot, bool) {
+func ReviewBotForLogin(provider Provider, login string) (ReviewBot, bool) {
 	login = strings.ToLower(strings.TrimSpace(login))
 	if login == "" {
 		return ReviewBot{}, false
 	}
 	for _, bot := range ReviewBots {
-		for _, known := range bot.Logins {
+		var logins []string
+		switch provider {
+		case ProviderGitHub:
+			logins = bot.Logins
+		case ProviderGitLab:
+			logins = bot.GitLabLogins
+		}
+		for _, known := range logins {
 			if strings.EqualFold(known, login) {
 				return bot, true
 			}
@@ -266,8 +267,8 @@ func ReviewBotForLogin(login string) (ReviewBot, bool) {
 }
 
 // IsReviewBotLogin reports whether login belongs to a registered review bot.
-func IsReviewBotLogin(login string) bool {
-	_, ok := ReviewBotForLogin(login)
+func IsReviewBotLogin(provider Provider, login string) bool {
+	_, ok := ReviewBotForLogin(provider, login)
 	return ok
 }
 

@@ -64,3 +64,22 @@ func TestLocalizeOwnRepositoryReference(t *testing.T) {
 		}
 	}
 }
+
+func TestRepositoryHyphensSurviveNormalizationAndStorage(t *testing.T) {
+	for _, ref := range []string{"owner/repo-#42", "owner/-repo#42", "group/subgroup/-repo-#42"} {
+		t.Run(ref, func(t *testing.T) {
+			got, err := Normalize([]string{ref})
+			if err != nil || len(got) != 1 || got[0] != ref {
+				t.Fatalf("Normalize(%q) = %v, %v", ref, got, err)
+			}
+			encoded, err := Encode([]string{ref})
+			if err != nil || encoded != ref {
+				t.Fatalf("Encode(%q) = %q, %v", ref, encoded, err)
+			}
+			decoded, err := Decode(ref)
+			if err != nil || len(decoded) != 1 || decoded[0] != ref {
+				t.Fatalf("Decode(%q) = %v, %v", ref, decoded, err)
+			}
+		})
+	}
+}

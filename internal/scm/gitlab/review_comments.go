@@ -133,7 +133,7 @@ func (h *Host) GetReviewComments(ctx context.Context, pr *scm.PR) ([]scm.ReviewC
 			if !note.Resolvable || note.Resolved || note.System {
 				continue
 			}
-			if note.Author == nil || !scm.IsReviewBotLogin(note.Author.Username) {
+			if note.Author == nil || !scm.IsReviewBotLogin(scm.ProviderGitLab, note.Author.Username) {
 				continue
 			}
 			path, line := note.positionPathLine()
