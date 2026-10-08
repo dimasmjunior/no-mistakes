@@ -660,7 +660,7 @@ func (j gitlabJob) completedAt() time.Time {
 // later page is malformed or the wrong shape, the jobs from earlier pages are
 // returned along with the error.
 func decodeGitlabJobs(out []byte) ([]gitlabJob, error) {
-	trimmed := bytesTrimToJSON(out)
+	trimmed := bytes.TrimSpace(out)
 	if len(trimmed) == 0 {
 		return nil, errors.New("decode gitlab jobs: response contained no JSON")
 	}
