@@ -461,9 +461,15 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 }
 
 func needsArtifactBlockSeparator(previous, current string) bool {
-	previousEndsDetails := strings.HasSuffix(strings.TrimSpace(previous), "</details>")
-	currentStartsDetails := strings.HasPrefix(strings.TrimSpace(current), "<details>")
-	return previousEndsDetails != currentStartsDetails
+	previous = strings.TrimSpace(previous)
+	current = strings.TrimSpace(current)
+	previousEndsDetails := strings.HasSuffix(previous, "</details>")
+	currentStartsDetails := strings.HasPrefix(current, "<details>")
+	if previousEndsDetails != currentStartsDetails {
+		return true
+	}
+	lastLine := previous[strings.LastIndexByte(previous, '\n')+1:]
+	return strings.HasPrefix(lastLine, "- ") && !strings.HasPrefix(current, "- ")
 }
 
 func shouldRenderTestingOutcome(opts testingSummaryOptions, wroteSummary bool, outcome string) bool {
