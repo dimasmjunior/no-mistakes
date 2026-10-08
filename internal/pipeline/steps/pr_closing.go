@@ -71,7 +71,7 @@ var closingReferenceInTextPattern = regexp.MustCompile(`(?i)\b((?:close|closes|c
 // full "<host>/<path>/-/issues/12" URL are both closing references.
 const gitlabClosingKeywordPattern = `(?:[Cc]los(?:e[sd]?|ing)|[Ff]ix(?:e[sd]|ing)?|[Rr]esolv(?:e[sd]?|ing)|[Ii]mplement(?:s|ed|ing)?)`
 
-const gitlabClosingReferencePattern = `(?:https?://[^\s>]*/(?:issues(?:/incident)?|work_items)/[1-9][0-9]*|\[issue:(?:[A-Za-z0-9_.-]+/)*[1-9][0-9]*\]|[A-Z][A-Z0-9_]+-[0-9]+|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9][0-9]*|#[1-9][0-9]*)`
+const gitlabClosingReferencePattern = `(?:https?://[^\s>,]+|\[issue:(?:[A-Za-z0-9_.-]+/)*[1-9][0-9]*\]|[A-Z][A-Z0-9_]+-[0-9]+|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9][0-9]*|#[1-9][0-9]*)`
 
 // gitlabClosingTargetPattern is the reference half of a closing-keyword line
 // without the URL form: a target is compared against the run's requested refs,
@@ -92,7 +92,9 @@ var gitlabClosingKeywordLinePattern = regexp.MustCompile(`^(?:(?:[-*+]|[0-9]+[.)
 
 var gitlabClosingReferencePatternCompiled = regexp.MustCompile(gitlabClosingTargetPattern)
 
-var gitlabClosingReferenceInTextPattern = regexp.MustCompile(`\b(` + gitlabClosingKeywordPattern + `)(` + gitlabClosingSeparator + `)(` + gitlabClosingReferencePattern + `)`)
+var gitlabClosingReferenceInTextPattern = regexp.MustCompile(`\b(` + gitlabClosingKeywordPattern + `)(` + gitlabClosingSeparator + `)(` + gitlabClosingReferencePattern + `(?:(?: *,? +and +| *,? *)(?:issues? +)?` + gitlabClosingReferencePattern + `)*)`)
+
+var gitlabClosingReferencesInStatementPattern = regexp.MustCompile(gitlabClosingReferencePattern)
 
 var (
 	githubClosingGrammar = closingGrammar{
@@ -195,7 +197,7 @@ func neutralizeGitLabClosingReferences(s string) string {
 	}
 	return gitlabClosingReferenceInTextPattern.ReplaceAllStringFunc(s, func(match string) string {
 		groups := gitlabClosingReferenceInTextPattern.FindStringSubmatch(match)
-		return groups[1] + groups[2] + escapeGitLabClosingReference(groups[3])
+		return groups[1] + groups[2] + gitlabClosingReferencesInStatementPattern.ReplaceAllStringFunc(groups[3], escapeGitLabClosingReference)
 	})
 }
 
