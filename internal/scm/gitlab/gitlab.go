@@ -687,9 +687,10 @@ func decodeGitlabJobs(out []byte) ([]gitlabJob, error) {
 
 // decodeGitlabJobPage reads one top-level JSON document from glab output:
 // either a bare array of jobs (`glab api --paginate`) or a pipeline object
-// with a "jobs" array, or null for a pipeline with no jobs
-// (`glab ci get --with-job-details`). Every entry must be a job object with a
-// non-empty name and status, or the read fails.
+// with a "jobs" field containing an array or null for a pipeline with no jobs
+// (`glab ci get --with-job-details`). A top-level null is invalid.
+// Every entry must be a job object with a non-empty name and status, or the
+// read fails.
 func decodeGitlabJobPage(raw json.RawMessage) ([]gitlabJob, error) {
 	trimmed := bytes.TrimSpace(raw)
 	var entries []json.RawMessage
