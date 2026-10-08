@@ -345,7 +345,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
 - Ends the run at its validation verdict by default: once every check is green (or a trusted `no_ci: true` declaration covers zero registered checks) and known mergeability is clear, the step records readiness and finishes, so the run completes as `checks_passed` and releases its worktree and its lane instead of waiting for a human merge - see [`ci_monitor_until_merged`](/no-mistakes/reference/global-config/#ci_monitor_until_merged)
-- Under `ci_monitor_until_merged: true`, continues its normal monitoring loop until the PR is merged, closed, declined, or the configured `ci_timeout` idle window elapses, then parks at an approval gate instead of ending the run
+- Under `ci_monitor_until_merged: true`, continues monitoring after readiness until the PR is merged, closed, or declined. In either mode, reaching the configured `ci_timeout` idle window parks at an approval gate
 - If the provider check read keeps failing (6 consecutive polls while the PR is still open), parks at an ask-user approval gate instead of spinning invisibly to `ci_timeout`; the provider-neutral finding names the provider CLI or credentials and includes the underlying error (for GitHub, `gh` < 2.50 rejecting `gh pr checks --json`), and the streak resets as soon as one read succeeds
 - The [`ci_timeout` reference](/no-mistakes/reference/global-config/#ci_timeout) owns idle re-arming, unlimited monitoring, and fail-closed reconciliation while that gate is parked
 - On GitHub, GitLab, Forgejo, Azure DevOps, and provider plugins declaring `mergeable_state`, polls provider mergeability alongside CI checks while the PR remains open
@@ -378,7 +378,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - If both CI failures and a merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: a trusted conclusion that the failure is not caused by the PR's code parks the selected findings as `ask-user` immediately and reports the agent's summary. Otherwise the step re-observes the settled checks and reports the same findings again, so the executor retries while `auto_fix.ci` attempts remain and parks when they are spent - the same follow-up every other step's fix round gets
 - The executor counts each automatic fix attempt durably in the step's round history when it starts, so revalidation or a daemon restart cannot reset the configured limit
-- Exits cleanly when every check is green (the default verdict), and under `ci_monitor_until_merged` when the PR is merged, closed, or declined
+- Exits cleanly at readiness by default, or when the PR is merged, closed, or declined in either mode
 - If the idle timeout is reached while the PR is still open: pauses for user approval, even when CI checks are currently healthy
 - If the idle timeout is reached while CI failures or a merge conflict are still known: pauses for user approval with findings for the remaining issues
 - If the idle timeout is reached while provider PR mergeability is still unresolved: pauses for user approval with a finding describing the unresolved mergeability state

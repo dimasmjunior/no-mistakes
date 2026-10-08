@@ -569,7 +569,7 @@ A genuinely idle/abandoned PR still parks at an approval gate after the timeout 
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
 
-Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`: under the default that covers waiting for checks that have not finished yet, and under `ci_monitor_until_merged: true` it covers the whole watch.
+Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to disable this timeout. The run still ends at readiness by default, or when the PR is merged or closed in either mode. You can cancel it with `no-mistakes axi abort --run <id>`.
 
 Legacy alias: `babysit_timeout`.
 
@@ -584,8 +584,8 @@ Whether the CI step keeps monitoring the pull request after every check is green
 
 `false` (the default): the green observation is the CI step's verdict.
 The step records readiness and finishes, so the run completes as `checks_passed` and releases its worktree and its lane instead of holding both open for a merge it does not own.
-`no-mistakes axi` reports `outcome: checks-passed`, the TUI reports `✓ Checks passed - PR ready to merge`, and the recorded CI duration measures CI only, because nothing waits on the merge.
-The released run does not observe or record a later merge. If merge evidence is independently persisted on the run, it changes only PR state, never the recorded outcome. `eval relabel` and recapture use that persisted evidence; neither fetches forge state.
+The recorded CI duration excludes waiting for a later merge. See the [CLI outcome reference](/no-mistakes/reference/cli/#no-mistakes-axi-run) for success and approved-exception reporting.
+The released run does not observe or record a later merge. If merge evidence is independently persisted on the run, it changes only PR state, never the recorded outcome. See [eval merge-derived labels](/no-mistakes/reference/eval/) for the effect on relabeling.
 
 `true`: restores the older watch.
 The run stays active and keeps polling the PR until it is merged, closed, or declined, bounded by [`ci_timeout`](#ci_timeout).

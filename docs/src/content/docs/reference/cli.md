@@ -227,9 +227,9 @@ Under [`ci_monitor_until_merged`](/no-mistakes/reference/global-config/#ci_monit
 While that monitor is running, do not run `axi run`, `rerun`, or a manual rebase: the monitor auto-rebases onto the base, resolves actual conflicts, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push, while a PR that is merely behind but clean needs no command.
 After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the restart conditions.
 Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
-`passed-with-override` is a completed run with an explicitly approved Test exception or a CI approval over still-failing checks.
-It stays a success but is distinct from a clean `passed`.
-A Test exception is an approval past a failing configured `commands.test`, a `no-go` verdict, an `inconclusive` verdict, or a [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) budget cut; approving a `no-surface` park records its reason but completes as `passed`.
+`passed-with-override` qualifies either `passed` or `checks-passed` when the run has an explicitly approved Test exception or a CI approval over still-failing checks.
+It stays a success, including at the opt-in live-monitor stopping point, but does not claim a clean validation.
+A Test exception is an approval past a failing configured `commands.test`, a `no-go` verdict, an `inconclusive` verdict, or a [`test_agent_timeout`](/no-mistakes/reference/global-config/#test_agent_timeout) budget cut; approving a `no-surface` park records its reason without adding the override qualification.
 `run.test_override_reason` preserves the Test exception explanation in drive and status output, including at the `checks-passed` stopping point; CI overrides retain their separate reason.
 Report those exceptions rather than describing Test as clean.
 `passed-with-skips` is a completed run where PR publication or CI verification automatically skipped because its provider was unavailable, or CI had no PR URL.
