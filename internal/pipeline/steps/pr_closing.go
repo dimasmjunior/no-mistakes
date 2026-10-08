@@ -37,8 +37,7 @@ const issuesSectionHeading = "## Issues"
 //     self-managed administrator) adds the gerunds and "implements", and
 //     Gitlab::ClosingIssueExtractor applies it as a plain regexp to the raw
 //     merge request description and commit messages: code blocks and inline
-//     code are NOT exempt. A code span therefore neutralizes nothing there and
-//     the reference itself has to be broken in the text.
+//     code are NOT exempt.
 type closingGrammar struct {
 	// keywordLine matches a line that is nothing but closing keywords and their
 	// targets, optionally as a bullet or ordered list item and with trailing
@@ -71,8 +70,6 @@ var closingReferenceInTextPattern = regexp.MustCompile(`(?i)\b((?:close|closes|c
 // full "<host>/<path>/-/issues/12" URL are both closing references.
 const gitlabClosingKeywordPattern = `(?:[Cc]los(?:e[sd]?|ing)|[Ff]ix(?:e[sd]|ing)?|[Rr]esolv(?:e[sd]?|ing)|[Ii]mplement(?:s|ed|ing)?)`
 
-const gitlabClosingReferencePattern = `(?:https?://[^\s>,]+|\[issue:(?:[A-Za-z0-9_.-]+/)*[1-9][0-9]*\]|[A-Z][A-Z0-9_]+-[0-9]+|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9][0-9]*|#[1-9][0-9]*)`
-
 // gitlabClosingTargetPattern is the reference half of a closing-keyword line
 // without the URL form: a target is compared against the run's requested refs,
 // which are project paths or bare numbers.
@@ -92,9 +89,7 @@ var gitlabClosingKeywordLinePattern = regexp.MustCompile(`^(?:(?:[-*+]|[0-9]+[.)
 
 var gitlabClosingReferencePatternCompiled = regexp.MustCompile(gitlabClosingTargetPattern)
 
-var gitlabClosingReferenceInTextPattern = regexp.MustCompile(`\b(` + gitlabClosingKeywordPattern + `)(` + gitlabClosingSeparator + `)(` + gitlabClosingReferencePattern + `(?:(?: *,? +and +| *,? *)(?:issues? +)?` + gitlabClosingReferencePattern + `)*)`)
-
-var gitlabClosingReferencesInStatementPattern = regexp.MustCompile(gitlabClosingReferencePattern)
+var gitlabClosingKeywordInTextPattern = regexp.MustCompile(`\b` + gitlabClosingKeywordPattern + `:? +`)
 
 var (
 	githubClosingGrammar = closingGrammar{
@@ -179,39 +174,10 @@ func neutralizeGitHubClosingReferences(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// neutralizeGitLabClosingReferences breaks every GitLab closing reference in
-// pipeline-generated text.
-//
-// GitLab's extractor is a plain regexp over the raw merge request description
-// and commit messages, so - unlike GitHub's - it does not skip code blocks: a
-// fenced "Fixes #12" in the pipeline's own evidence would close #12 on merge,
-// and an inline code span cannot stop it. The reference is therefore escaped in
-// the text itself, where the pattern needs the character verbatim: the "#" of
-// "#12" or "group/project#12", and the ":" of an "https://..." reference.
-// Markdown consumes the escape when it renders (leaving an ordinary, non-live
-// reference), and inside a code block it stays visible as a literal backslash -
-// the price of not closing an issue.
 func neutralizeGitLabClosingReferences(s string) string {
-	if !gitlabClosingReferenceInTextPattern.MatchString(s) {
-		return s
-	}
-	return gitlabClosingReferenceInTextPattern.ReplaceAllStringFunc(s, func(match string) string {
-		groups := gitlabClosingReferenceInTextPattern.FindStringSubmatch(match)
-		return groups[1] + groups[2] + gitlabClosingReferencesInStatementPattern.ReplaceAllStringFunc(groups[3], escapeGitLabClosingReference)
+	return gitlabClosingKeywordInTextPattern.ReplaceAllStringFunc(s, func(match string) string {
+		return strings.Replace(match, " ", "&#32;", 1)
 	})
-}
-
-// escapeGitLabClosingReference escapes the character GitLab's closing pattern
-// needs verbatim, so the reference stops being a closing one while the text
-// still reads as the reference it names.
-func escapeGitLabClosingReference(ref string) string {
-	if urlStart := strings.Index(ref, "://"); urlStart > 0 {
-		return ref[:urlStart] + `\:` + ref[urlStart+1:]
-	}
-	if refStart := strings.LastIndex(ref, "#"); refStart >= 0 {
-		return ref[:refStart] + `\` + ref[refStart:]
-	}
-	return strings.NewReplacer(":", `\:`, "-", `\-`).Replace(ref)
 }
 
 var htmlCodeTagPattern = regexp.MustCompile(`(?i)<(/?)(code|pre)\b[^>]*>`)

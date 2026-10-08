@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"strings"
@@ -349,7 +350,7 @@ func TestClosingGrammar_GitLabWordsAndNestedReferences(t *testing.T) {
 	if got := extractClosingKeywordLines("Closes https://gitlab.example.com/group/subgroup/project/-/issues/12", gitlabClosingGrammar); len(got) != 0 {
 		t.Fatalf("extractClosingKeywordLines(URL, gitlab) = %v, want none", got)
 	}
-	if got := neutralizeGitLabClosingReferences("Closes https://gitlab.example.com/group/subgroup/project/-/issues/12"); !strings.Contains(got, `https\://`) {
+	if got := neutralizeGitLabClosingReferences("Closes https://gitlab.example.com/group/subgroup/project/-/issues/12"); !strings.Contains(got, `Closes&#32;https://`) {
 		t.Fatalf("neutralizeGitLabClosingReferences(URL) = %q, want the URL reference neutralized", got)
 	}
 	for _, line := range []string{"Implements #12", "Fixing #12"} {
@@ -359,10 +360,6 @@ func TestClosingGrammar_GitLabWordsAndNestedReferences(t *testing.T) {
 	}
 }
 
-// Everything the pipeline publishes for a GitLab merge request has to be
-// *not* a closing reference: GitLab's extractor runs a plain regexp over the
-// raw description, so - unlike on GitHub - a code span does not neutralize a
-// reference and a fenced block is not exempt. The reference itself is broken.
 func TestNeutralizeGitLabClosingReferences(t *testing.T) {
 	t.Parallel()
 
@@ -371,41 +368,49 @@ func TestNeutralizeGitLabClosingReferences(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"implements", "Implements #12", `Implements \#12`},
-		{"gerund", "Fixing #12", `Fixing \#12`},
-		{"issues prefix", "Closes issues #12", `Closes issues \#12`},
-		{"nested project path", "Closes group/subgroup/project#12", `Closes group/subgroup/project\#12`},
-		{"issue url", "Closes https://gitlab.example.com/group/project/-/issues/12", `Closes https\://gitlab.example.com/group/project/-/issues/12`},
-		{"legacy issue url", "Closes https://gitlab.com/group/project/issues/12", `Closes https\://gitlab.com/group/project/issues/12`},
-		{"incident url", "Closes https://gitlab.com/group/project/-/issues/incident/12", `Closes https\://gitlab.com/group/project/-/issues/incident/12`},
-		{"legacy incident url", "Closes https://gitlab.com/group/project/issues/incident/12", `Closes https\://gitlab.com/group/project/issues/incident/12`},
-		{"jira key", "Fixes PROJECT-7", `Fixes PROJECT\-7`},
-		{"jira key with digits and underscore", "Resolves PROJ_2-7", `Resolves PROJ_2\-7`},
-		{"alternative issue prefix", "Closes GL-12", `Closes GL\-12`},
-		{"bracketed issue", "Closes [issue:12]", `Closes [issue\:12]`},
-		{"bracketed cross-project issue", "Closes [issue:group/subgroup/project/12]", `Closes [issue\:group/subgroup/project/12]`},
-		{"mixed targets", "Fixes PROJECT-7, #12 and GL-13", `Fixes PROJECT\-7, \#12 and GL\-13`},
-		{"generic url before issue", "Fixes https://example.com/docs, #12", `Fixes https\://example.com/docs, \#12`},
-		{"http url before issue", "Fixes http://example.com/docs, #12", `Fixes http\://example.com/docs, \#12`},
-		{"complete mixed statement", "Closes https://example.com/docs, #12 and group/subgroup/project#13, [issue:14], PROJECT-15", `Closes https\://example.com/docs, \#12 and group/subgroup/project\#13, [issue\:14], PROJECT\-15`},
-		{"url after native reference", "Fixes #12, https://example.com/docs and #13", `Fixes \#12, https\://example.com/docs and \#13`},
-		{"comma without spaces", "Fixes https://example.com/docs,#12", `Fixes https\://example.com/docs,\#12`},
-		{"space separated references", "Fixes #12 #13", `Fixes \#12 \#13`},
-		{"adjacent references", "Fixes #12#13", `Fixes \#12\#13`},
-		{"repeated issues prefix", "Fixes issues #12, issues #13", `Fixes issues \#12, issues \#13`},
-		{"statement stops at prose", "Fixes #12, related to #13", `Fixes \#12, related to #13`},
-		{"multiple statements", "Fixes #12, #13; Implements #14 and #15", `Fixes \#12, \#13; Implements \#14 and \#15`},
-		{"project work item url", "Closes https://gitlab.example.com/group/project/-/work_items/12", `Closes https\://gitlab.example.com/group/project/-/work_items/12`},
-		{"group work item url", "Closes https://gitlab.example.com/groups/group/subgroup/-/work_items/12", `Closes https\://gitlab.example.com/groups/group/subgroup/-/work_items/12`},
-		{"fenced work item url", "```\nCloses https://gitlab.com/group/project/-/work_items/12\n```", "```\nCloses https\\://gitlab.com/group/project/-/work_items/12\n```"},
-		{"inside a fenced block", "```text\nFixes #12\n```", "```text\nFixes \\#12\n```"},
-		{"inside an indented block", "    Closes #12", `    Closes \#12`},
+		{"leading zero", "Fixes #012, #34", "Fixes&#32;#012, #34"},
+		{"project leading zero", "Fixes project#012, #34", "Fixes&#32;project#012, #34"},
+		{"bracket leading zero", "Fixes [issue:012], #34", "Fixes&#32;[issue:012], #34"},
+		{"unknown reference", "Fixes future-reference, #34", "Fixes&#32;future-reference, #34"},
+		{"colon and spaces", "Closes:   #12", "Closes:&#32;  #12"},
+		{"implements", "Implements #12", "Implements&#32;#12"},
+		{"gerund", "Fixing #12", "Fixing&#32;#12"},
+		{"issues prefix", "Closes issues #12", "Closes&#32;issues #12"},
+		{"nested project path", "Closes group/subgroup/project#12", "Closes&#32;group/subgroup/project#12"},
+		{"issue url", "Closes https://gitlab.example.com/group/project/-/issues/12", "Closes&#32;https://gitlab.example.com/group/project/-/issues/12"},
+		{"legacy issue url", "Closes https://gitlab.com/group/project/issues/12", "Closes&#32;https://gitlab.com/group/project/issues/12"},
+		{"incident url", "Closes https://gitlab.com/group/project/-/issues/incident/12", "Closes&#32;https://gitlab.com/group/project/-/issues/incident/12"},
+		{"legacy incident url", "Closes https://gitlab.com/group/project/issues/incident/12", "Closes&#32;https://gitlab.com/group/project/issues/incident/12"},
+		{"jira key", "Fixes PROJECT-7", "Fixes&#32;PROJECT-7"},
+		{"jira key with digits and underscore", "Resolves PROJ_2-7", "Resolves&#32;PROJ_2-7"},
+		{"alternative issue prefix", "Closes GL-12", "Closes&#32;GL-12"},
+		{"bracketed issue", "Closes [issue:12]", "Closes&#32;[issue:12]"},
+		{"bracketed cross-project issue", "Closes [issue:group/subgroup/project/12]", "Closes&#32;[issue:group/subgroup/project/12]"},
+		{"mixed targets", "Fixes PROJECT-7, #12 and GL-13", "Fixes&#32;PROJECT-7, #12 and GL-13"},
+		{"generic url before issue", "Fixes https://example.com/docs, #12", "Fixes&#32;https://example.com/docs, #12"},
+		{"http url before issue", "Fixes http://example.com/docs, #12", "Fixes&#32;http://example.com/docs, #12"},
+		{"complete mixed statement", "Closes https://example.com/docs, #12 and group/subgroup/project#13, [issue:14], PROJECT-15", "Closes&#32;https://example.com/docs, #12 and group/subgroup/project#13, [issue:14], PROJECT-15"},
+		{"url after native reference", "Fixes #12, https://example.com/docs and #13", "Fixes&#32;#12, https://example.com/docs and #13"},
+		{"comma without spaces", "Fixes https://example.com/docs,#12", "Fixes&#32;https://example.com/docs,#12"},
+		{"space separated references", "Fixes #12 #13", "Fixes&#32;#12 #13"},
+		{"adjacent references", "Fixes #12#13", "Fixes&#32;#12#13"},
+		{"repeated issues prefix", "Fixes issues #12, issues #13", "Fixes&#32;issues #12, issues #13"},
+		{"statement stops at prose", "Fixes #12, related to #13", "Fixes&#32;#12, related to #13"},
+		{"multiple statements", "Fixes #12, #13; Implements #14 and #15", "Fixes&#32;#12, #13; Implements&#32;#14 and #15"},
+		{"project work item url", "Closes https://gitlab.example.com/group/project/-/work_items/12", "Closes&#32;https://gitlab.example.com/group/project/-/work_items/12"},
+		{"group work item url", "Closes https://gitlab.example.com/groups/group/subgroup/-/work_items/12", "Closes&#32;https://gitlab.example.com/groups/group/subgroup/-/work_items/12"},
+		{"fenced work item url", "```\nCloses https://gitlab.com/group/project/-/work_items/12\n```", "```\nCloses&#32;https://gitlab.com/group/project/-/work_items/12\n```"},
+		{"inside a fenced block", "```text\nFixes #12\n```", "```text\nFixes&#32;#12\n```"},
+		{"inside an indented block", "    Closes #12", "    Closes&#32;#12"},
 		{"a reference without a keyword", "Related to #12", "Related to #12"},
-		{"an already neutralized reference", "Fixes `#12`", "Fixes `#12`"},
+		{"an already neutralized reference", "Fixes `#12`", "Fixes&#32;`#12`"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := neutralizeGitLabClosingReferences(tc.in)
+			if html.UnescapeString(got) != tc.in {
+				t.Fatalf("neutralization changed readable text: %q", got)
+			}
 			for _, wrap := range [][2]string{{"", ""}, {"```text\n", "\n```"}, {"    ", ""}, {"`", "`"}} {
 				input, want := wrap[0]+tc.in+wrap[1], wrap[0]+tc.want+wrap[1]
 				if published := neutralizeAttestationMarkers(scm.ProviderGitLab, input); published != want {
@@ -619,7 +624,7 @@ func TestPRStep_GitLabClosesRendersAndVerifiesOnTheMR(t *testing.T) {
 	if got := strings.Join(lines, "|"); got != "Closes #95|Closes other/subgroup/project#7" {
 		t.Fatalf("closing lines = %q, want exactly the two requested references:\n%s", got, body)
 	}
-	if !strings.Contains(body, `Implements \#95`) {
+	if !strings.Contains(body, `Implements&#32;#95`) {
 		t.Fatalf("the drafted closing sentence was published live:\n%s", body)
 	}
 }
@@ -651,7 +656,7 @@ func TestPRStep_GitHubClosesKeepsGitHubNeutralization(t *testing.T) {
 		t.Fatalf("published body lacks the requested closing reference:\n%s", body)
 	}
 	// "Implements" is not a GitHub closing keyword, so it stays verbatim.
-	if !strings.Contains(body, "Implements #95") || strings.Contains(body, `Implements \#95`) {
+	if !strings.Contains(body, "Implements #95") || strings.Contains(body, `Implements&#32;#95`) {
 		t.Fatalf("GitHub body neutralization changed:\n%s", body)
 	}
 }
@@ -675,6 +680,27 @@ func TestGitLabClosingCoverageRequiresLiteralSpaces(t *testing.T) {
 				t.Fatalf("valid line %q not credited: %q", valid, got)
 			}
 			if err := verifyClosingIssuesInBody(valid, sctx); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestGitLabClosingCoverageRejectsTabs(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		"Closes\t#42", "Closes: \t#42", "Closes issues\t#42",
+		"Closes #1,\t#42", "Closes #1 and\t#42", "Closes #1\tand #42",
+	} {
+		t.Run(body, func(t *testing.T) {
+			sctx := gitlabClosingContext("42")
+			if got := issuesSection(sctx, body); got != "## Issues\n\nCloses #42" {
+				t.Fatalf("author text suppressed requested closure: %q", got)
+			}
+			if err := verifyClosingIssuesInBody(body, sctx); err == nil {
+				t.Fatal("tab-separated reference verified as a live closure")
+			}
+			if err := verifyClosingIssuesInBody(appendIssuesSection(body, issuesSection(sctx, body)), sctx); err != nil {
 				t.Fatal(err)
 			}
 		})
