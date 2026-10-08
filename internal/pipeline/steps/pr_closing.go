@@ -71,7 +71,7 @@ var closingReferenceInTextPattern = regexp.MustCompile(`(?i)\b((?:close|closes|c
 // full "<host>/<path>/-/issues/12" URL are both closing references.
 const gitlabClosingKeywordPattern = `(?:[Cc]los(?:e[sd]?|ing)|[Ff]ix(?:e[sd]|ing)?|[Rr]esolv(?:e[sd]?|ing)|[Ii]mplement(?:s|ed|ing)?)`
 
-const gitlabClosingReferencePattern = `(?:https?://[^\s>]*/-/(?:issues|work_items)/[1-9][0-9]*|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9][0-9]*|#[1-9][0-9]*)`
+const gitlabClosingReferencePattern = `(?:https?://[^\s>]*/(?:issues(?:/incident)?|work_items)/[1-9][0-9]*|\[issue:(?:[A-Za-z0-9_.-]+/)*[1-9][0-9]*\]|[A-Z][A-Z0-9_]+-[0-9]+|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*#[1-9][0-9]*|#[1-9][0-9]*)`
 
 // gitlabClosingTargetPattern is the reference half of a closing-keyword line
 // without the URL form: a target is compared against the run's requested refs,
@@ -209,7 +209,7 @@ func escapeGitLabClosingReference(ref string) string {
 	if refStart := strings.LastIndex(ref, "#"); refStart >= 0 {
 		return ref[:refStart] + `\` + ref[refStart:]
 	}
-	return ref
+	return strings.NewReplacer(":", `\:`, "-", `\-`).Replace(ref)
 }
 
 var htmlCodeTagPattern = regexp.MustCompile(`(?i)<(/?)(code|pre)\b[^>]*>`)

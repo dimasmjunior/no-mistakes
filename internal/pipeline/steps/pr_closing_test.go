@@ -376,6 +376,15 @@ func TestNeutralizeGitLabClosingReferences(t *testing.T) {
 		{"issues prefix", "Closes issues #12", `Closes issues \#12`},
 		{"nested project path", "Closes group/subgroup/project#12", `Closes group/subgroup/project\#12`},
 		{"issue url", "Closes https://gitlab.example.com/group/project/-/issues/12", `Closes https\://gitlab.example.com/group/project/-/issues/12`},
+		{"legacy issue url", "Closes https://gitlab.com/group/project/issues/12", `Closes https\://gitlab.com/group/project/issues/12`},
+		{"incident url", "Closes https://gitlab.com/group/project/-/issues/incident/12", `Closes https\://gitlab.com/group/project/-/issues/incident/12`},
+		{"legacy incident url", "Closes https://gitlab.com/group/project/issues/incident/12", `Closes https\://gitlab.com/group/project/issues/incident/12`},
+		{"jira key", "Fixes PROJECT-7", `Fixes PROJECT\-7`},
+		{"jira key with digits and underscore", "Resolves PROJ_2-7", `Resolves PROJ_2\-7`},
+		{"alternative issue prefix", "Closes GL-12", `Closes GL\-12`},
+		{"bracketed issue", "Closes [issue:12]", `Closes [issue\:12]`},
+		{"bracketed cross-project issue", "Closes [issue:group/subgroup/project/12]", `Closes [issue\:group/subgroup/project/12]`},
+		{"mixed targets", "Fixes PROJECT-7, #12 and GL-13", `Fixes PROJECT\-7, #12 and GL-13`},
 		{"project work item url", "Closes https://gitlab.example.com/group/project/-/work_items/12", `Closes https\://gitlab.example.com/group/project/-/work_items/12`},
 		{"group work item url", "Closes https://gitlab.example.com/groups/group/subgroup/-/work_items/12", `Closes https\://gitlab.example.com/groups/group/subgroup/-/work_items/12`},
 		{"fenced work item url", "```\nCloses https://gitlab.com/group/project/-/work_items/12\n```", "```\nCloses https\\://gitlab.com/group/project/-/work_items/12\n```"},
@@ -387,6 +396,12 @@ func TestNeutralizeGitLabClosingReferences(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := neutralizeGitLabClosingReferences(tc.in)
+			for _, wrap := range [][2]string{{"", ""}, {"```text\n", "\n```"}, {"    ", ""}, {"`", "`"}} {
+				input, want := wrap[0]+tc.in+wrap[1], wrap[0]+tc.want+wrap[1]
+				if published := neutralizeAttestationMarkers(scm.ProviderGitLab, input); published != want {
+					t.Fatalf("published text = %q, want %q", published, want)
+				}
+			}
 			if got != tc.want {
 				t.Fatalf("neutralizeGitLabClosingReferences(%q) = %q, want %q", tc.in, got, tc.want)
 			}
