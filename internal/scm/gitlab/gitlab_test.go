@@ -488,6 +488,7 @@ func TestFetchFailedCheckTargetLogsAggregatesEverySelectedJob(t *testing.T) {
 		"glab mr view 123 --output json": {stdout: `{"head_pipeline":{"id":77}}` + "\n"},
 		"glab ci get --pipeline-id 77 --output json --with-job-details": {
 			stdout: `{"jobs":[{"id":55,"name":"build","status":"failed"},{"id":56,"name":"lint","status":"failed"}]}` + "\n",
+			stderr: "glab diagnostic notice\n",
 		},
 		"glab ci trace 55": {stdout: "build failed\n"},
 		"glab ci trace 56": {stdout: "lint failed\n"},
@@ -972,6 +973,51 @@ func TestGetChecksRequiresExplicitPipelineMetadata(t *testing.T) {
 				t.Fatalf("GetChecks() checks = %+v, want nil for invalid pipeline metadata", checks)
 			}
 		})
+	}
+}
+
+// The subprocess stream contract keeps diagnostics out of successful job JSON
+// and retains them on failure. Mixing the streams would reject the build job.
+func TestGetChecksSeparatesJobJSONFromStderr(t *testing.T) {
+	t.Parallel()
+
+	for _, route := range []string{"primary", "REST fallback", "CLI fallback"} {
+		for _, fails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/fails=%t", route, fails), func(t *testing.T) {
+				t.Parallel()
+				jobsCommand := "glab ci status --mr 123 --output json"
+				projectPath := ""
+				responses := map[string]gitlabTestResponse{}
+				if route != "primary" {
+					responses[jobsCommand] = gitlabTestResponse{stderr: "unknown flag: --mr\n", code: 1}
+					responses["glab mr view 123 --output json"] = gitlabTestResponse{stdout: `{"head_pipeline":{"id":77}}`}
+					jobsCommand = "glab ci get --pipeline-id 77 --output json --with-job-details"
+					if route == "REST fallback" {
+						projectPath = "group/project"
+						jobsCommand = "glab api --paginate projects/group%2Fproject/pipelines/77/jobs"
+					}
+				}
+				response := gitlabTestResponse{
+					stdout: `[{"id":55,"name":"build","status":"success"}]`,
+					stderr: "glab diagnostic notice\n",
+				}
+				if fails {
+					response.code = 1
+				}
+				responses[jobsCommand] = response
+				host := New(gitlabTestCmdFactory(responses), nil, "", projectPath)
+				checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+				if fails {
+					if err == nil || !strings.Contains(err.Error(), "glab diagnostic notice") || len(checks) != 0 {
+						t.Fatalf("GetChecks() = (%+v, %v), want command error with stderr and no checks", checks, err)
+					}
+					return
+				}
+				if err != nil || len(checks) != 1 || checks[0].Name != "build" || checks[0].ProviderID != "gitlab-job:55" || checks[0].Bucket != scm.CheckBucketPass {
+					t.Fatalf("GetChecks() = (%+v, %v), want passing build job despite stderr notice", checks, err)
+				}
+			})
+		}
 	}
 }
 

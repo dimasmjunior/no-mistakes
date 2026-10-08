@@ -429,10 +429,13 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	// glab ci status --mr <id> --output json lists jobs for the MR's latest pipeline.
 	// Not all glab versions support --mr; fall back to listing pipelines by branch via view.
 	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", pr.Number, "--output", "json")
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		if !isUnsupportedMRFlagError(out) {
-			return nil, fmt.Errorf("glab ci status: %s: %w", strings.TrimSpace(string(out)), err)
+		diagnostic := append(out, stderr.Bytes()...)
+		if !isUnsupportedMRFlagError(diagnostic) {
+			return nil, fmt.Errorf("glab ci status: %s: %w", strings.TrimSpace(string(diagnostic)), err)
 		}
 		return h.getChecksFallback(ctx, pr)
 	}
@@ -491,9 +494,11 @@ func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, 
 		return nil, nil
 	}
 	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(pipelineID)...)
-	jobsOut, err := jobsCmd.CombinedOutput()
+	var stderr bytes.Buffer
+	jobsCmd.Stderr = &stderr
+	jobsOut, err := jobsCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("glab pipeline jobs: %s: %w", strings.TrimSpace(string(jobsOut)), err)
+		return nil, fmt.Errorf("glab pipeline jobs: %s: %w", strings.TrimSpace(string(append(jobsOut, stderr.Bytes()...))), err)
 	}
 	return parseGitlabJobs(jobsOut)
 }
@@ -564,9 +569,11 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 		return nil, errors.New("resolve GitLab pipeline for selected logs: pipeline ID is empty")
 	}
 	jobsCmd := h.cmd(ctx, "glab", h.pipelineJobsArgs(payload.HeadPipeline.ID)...)
-	jobsOut, err := jobsCmd.CombinedOutput()
+	var stderr bytes.Buffer
+	jobsCmd.Stderr = &stderr
+	jobsOut, err := jobsCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("list GitLab jobs for selected logs: %w", err)
+		return nil, fmt.Errorf("list GitLab jobs for selected logs: %s: %w", strings.TrimSpace(string(append(jobsOut, stderr.Bytes()...))), err)
 	}
 	results := make([]scm.FailedCheckLog, 0, len(targets))
 	for _, target := range targets {
