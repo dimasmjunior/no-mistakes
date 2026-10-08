@@ -20,7 +20,7 @@ import (
 // verbatim, so only the references the author text does not already close
 // are added to its generated appendix. Closure is never inferred from intent,
 // commits, or branch names: pipeline-generated text is published with its
-// closing references neutralized (neutralizeClosingReferences).
+// closing references neutralized by the provider's closingGrammar.
 
 const issuesSectionHeading = "## Issues"
 
@@ -46,8 +46,8 @@ type closingGrammar struct {
 	keywordLine *regexp.Regexp
 	// reference extracts the targets of a closing-keyword line.
 	reference *regexp.Regexp
-	// neutralize breaks every closing reference in generated text, so nothing
-	// the pipeline publishes can close an issue.
+	// neutralize breaks closing references in generated text under the
+	// supported grammar, which on GitLab is the default server pattern.
 	neutralize func(string) string
 	// codeAware reports whether the forge ignores a reference inside code. It
 	// decides whether the closing-line scan may skip fenced and indented blocks
