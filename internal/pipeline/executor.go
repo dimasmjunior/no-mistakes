@@ -2147,12 +2147,13 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 }
 
 func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
+	status := e.terminalRunStatus(run)
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
 	var err error
 	if verified {
-		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCompleted, verifiedHead)
+		err = e.db.UpdateRunStatusWithVerifiedHead(run.ID, status, verifiedHead)
 	} else {
-		err = e.db.UpdateRunStatus(run.ID, types.RunCompleted)
+		err = e.db.UpdateRunStatus(run.ID, status)
 	}
 	if err != nil {
 		return err
@@ -2160,9 +2161,62 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 	if verified {
 		run.HeadSHA = verifiedHead
 	}
-	run.Status = types.RunCompleted
+	run.Status = status
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return nil
+}
+
+// terminalRunStatus decides which success status a finished run records.
+//
+// A run whose CI step completed on a green head while its PR was still open did
+// not merely complete: it reached its validation verdict and deliberately
+// stopped observing the PR, so it records checks_passed. That keeps the outcome
+// honest - a caller can tell "checks passed, waiting on a human merge decision"
+// apart from a run that ended because the PR merged or closed - and keeps it
+// stable, because the merge decision was never this run's to observe.
+//
+// The verdict is derived from durable state, not from in-memory execution, so
+// the live path and every crash-recovery path (executeRecoveredRemainder,
+// skipRecoveredRemainder) record the same outcome: readiness persisted by the
+// step, a PR state the run observed, and a CI step that completed rather than
+// being skipped. A merged or closed PR, an unknown PR state, a run that never
+// established readiness, and a skipped CI step all stay an ordinary completion.
+func (e *Executor) terminalRunStatus(run *db.Run) types.RunStatus {
+	if run == nil {
+		return types.RunCompleted
+	}
+	recorded, err := e.db.GetRun(run.ID)
+	if err != nil {
+		slog.Warn("failed to read run before recording its terminal status", "run", run.ID, "error", err)
+		return types.RunCompleted
+	}
+	if recorded == nil {
+		return types.RunCompleted
+	}
+	if recorded.CIReadyAt == nil {
+		return types.RunCompleted
+	}
+	prState := ""
+	if recorded.PRState != nil {
+		prState = strings.ToLower(strings.TrimSpace(*recorded.PRState))
+	}
+	if prState != "open" {
+		return types.RunCompleted
+	}
+	steps, err := e.db.GetStepsByRun(recorded.ID)
+	if err != nil {
+		slog.Warn("failed to read steps before recording the run's terminal status", "run", run.ID, "error", err)
+		return types.RunCompleted
+	}
+	for _, step := range steps {
+		if step.StepName != types.StepCI {
+			continue
+		}
+		if step.Status == types.StepStatusCompleted {
+			return types.RunChecksPassed
+		}
+	}
+	return types.RunCompleted
 }
 
 func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
@@ -2245,9 +2299,9 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 	// banner reads the reason off the delta (like PRURL) so it never needs a
 	// snapshot to distinguish it from a genuinely green run. Derived from step
 	// rows so both ActionApprove sites (live wait and Resume) are covered.
-	// Gated on the terminal status, not the event type: errorRun emits the same
-	// event for failed/cancelled runs, whose banner never reads it.
-	if run.Status == types.RunCompleted {
+	// Gated on the terminal success statuses, not the event type: errorRun emits
+	// the same event for failed/cancelled runs, whose banner never reads it.
+	if run.Status == types.RunCompleted || run.Status == types.RunChecksPassed {
 		if steps, err := e.db.GetStepsByRun(run.ID); err == nil {
 			ciReason, testReason := completionOverrideReasons(steps)
 			if ciReason != "" {
