@@ -144,7 +144,7 @@ func repoOwner(slug string) string {
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
 
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ReviewComments: true}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ReviewComments: true, ClosingReferences: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {

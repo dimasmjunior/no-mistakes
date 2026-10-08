@@ -318,3 +318,62 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 		t.Fatalf("expected continued-monitoring pass log, got: %v", logs)
 	}
 }
+
+// TestCIStep_GitLabReviewBotDiscussionCommentsParkUnderAlways is the GitLab
+// half of the review-bot comment read: an unresolved discussion note left by a
+// registered review bot's GitLab account (greptileai - GitLab has no app slug
+// and no "[bot]" login) becomes an ask-user finding under
+// ci.review_bot_comments: always, exactly as a GitHub review thread does, and
+// the head is not reported checks-passed over it.
+//
+// GitLab's job objects name no publishing application, so there is no check
+// identity to make `on_failure` (the default) fire: the comment read is the
+// whole integration here, and it runs on the green/not-yet-registered path.
+func TestCIStep_GitLabReviewBotDiscussionCommentsParkUnderAlways(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	checksJSON := `[{"id":1,"name":"build","status":"success"}]`
+	discussionsJSON := `[{"id":"d1","notes":[{"id":1126,"body":"This retry loop can spin forever","resolvable":true,"resolved":false,"author":{"username":"greptileai"},"position":{"new_path":"internal/app.go","new_line":42}}]}]`
+	env := stepstest.FakeCIGlabWithReviewComments(t, "opened", checksJSON, discussionsJSON)
+
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.CI.ReviewBotComments = config.CIReviewBotCommentsAlways
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	step := (&steps.CIStep{}).SetWaitForNextPoll(failOnExtraPoll)
+	pinCIMonitorClock(step)
+	outcome, err := stepstest.ExecuteWithAutoFix(t, step, sctx, 0)
+	if err != nil {
+		t.Fatalf("CI step returned error: %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval || outcome.AutoFixable {
+		t.Fatalf("outcome = %#v, want a blocking, non-auto-fixable park", outcome)
+	}
+	findings, parseErr := types.ParseFindingsJSON(outcome.Findings)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want one per unresolved bot discussion note", findings.Items)
+	}
+	item := findings.Items[0]
+	if item.Action != types.ActionAskUser || item.Severity != types.FindingSeverityWarning || item.Category != types.FindingCategoryCIReviewBot {
+		t.Fatalf("finding = %+v, want an ask-user ci-review-bot warning", item)
+	}
+	if item.File != "internal/app.go" || item.Line != 42 || !strings.Contains(item.Description, "greptileai") || !strings.Contains(item.Description, "spin forever") {
+		t.Fatalf("finding = %+v, want the GitLab bot login, the note's file and line, and its body", item)
+	}
+	joined := strings.Join(logs, "\n")
+	if strings.Contains(joined, "all CI checks passed") {
+		t.Fatalf("logs = %v, checks-passed must not be reported over an unresolved bot comment", logs)
+	}
+}

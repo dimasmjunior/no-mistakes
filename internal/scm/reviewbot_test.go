@@ -21,6 +21,18 @@ func TestReviewBotRegistry_ResolvesAppAndLoginToTheSameBot(t *testing.T) {
 			t.Fatalf("IsReviewBotLogin(%q) = false, want true", login)
 		}
 	}
+	// GitLab has no App slugs and no "[bot]" login convention, so the bot's
+	// GitLab account is a different spelling that must resolve to the same
+	// registry entry: the check identity and the comment identity are one bot.
+	for _, login := range []string{"greptileai", "GreptileAI"} {
+		byLogin, ok := ReviewBotForLogin(login)
+		if !ok || byLogin.AppSlug != byApp.AppSlug {
+			t.Fatalf("ReviewBotForLogin(%q) = %+v, %v; want the GitLab spelling of the greptile-apps bot", login, byLogin, ok)
+		}
+		if !IsReviewBotLogin(login) {
+			t.Fatalf("IsReviewBotLogin(%q) = false, want true", login)
+		}
+	}
 	for _, slug := range []string{"", "github-actions", "codecov"} {
 		if _, ok := ReviewBotForApp(slug); ok {
 			t.Fatalf("ReviewBotForApp(%q) matched a bot; an unknown or empty app identity must never be a review bot", slug)

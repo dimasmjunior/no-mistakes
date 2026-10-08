@@ -16,12 +16,25 @@ func TestNormalizeRepeatableReferencesDeduplicatesAndOrders(t *testing.T) {
 }
 
 func TestNormalizeRejectsMalformedReferences(t *testing.T) {
-	for _, value := range []string{"", " ", "0", "#42", "owner/repo", "owner//repo#1", "owner/repo#0", "owner/repo#1#2", "owner name/repo#1"} {
+	for _, value := range []string{"", " ", "0", "#42", "owner/repo", "owner//repo#1", "owner/repo#0", "owner/repo#1#2", "owner name/repo#1", "single#1", "group//sub/project#1", "group/./project#1", "group/-/project#1"} {
 		t.Run(value, func(t *testing.T) {
 			if _, err := Normalize([]string{value}); err == nil {
 				t.Fatalf("Normalize(%q) unexpectedly succeeded", value)
 			}
 		})
+	}
+}
+
+// A GitLab project path nests under subgroups, so a cross-project reference is
+// not limited to one slash; a GitHub owner/repository reference is the same
+// shape with exactly two segments.
+func TestNormalizeAcceptsSubgroupProjectPaths(t *testing.T) {
+	got, err := Normalize([]string{"Group/SubGroup/Project#7", "group/subgroup/project#7", "other.io/my_group#3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs := strings.Join(got, ","); refs != "group/subgroup/project#7,other.io/my_group#3" {
+		t.Fatalf("Normalize() = %q", refs)
 	}
 }
 

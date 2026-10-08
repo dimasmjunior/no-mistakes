@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -30,7 +31,7 @@ func TestPRStep_NeverInfersClosingReferenceFromIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := readPRBodyFile(t, bodyFile)
-	if strings.Contains(body, "## Issues") || len(extractClosingKeywordLines(body)) != 0 {
+	if strings.Contains(body, "## Issues") || len(extractClosingKeywordLines(body, githubClosingGrammar)) != 0 {
 		t.Fatalf("closing reference inferred without --closes:\n%s", body)
 	}
 }
@@ -50,7 +51,7 @@ func TestPRStep_NeutralizesClosingReferenceInPublishedIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := readPRBodyFile(t, bodyFile)
-	if !strings.Contains(body, "Fixes `#12`") || strings.Contains(body, "## Issues") || len(extractClosingKeywordLines(body)) != 0 {
+	if !strings.Contains(body, "Fixes `#12`") || strings.Contains(body, "## Issues") || len(extractClosingKeywordLines(body, githubClosingGrammar)) != 0 {
 		t.Fatalf("intent's Fixes #12 must be published neutralized:\n%s", body)
 	}
 }
@@ -73,7 +74,7 @@ func TestPRStep_NeutralizesClosingReferenceInDraftedNarrative(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := readPRBodyFile(t, bodyFile)
-	if !strings.Contains(body, "Closes `#7`") || strings.Contains(body, "## Issues") || len(extractClosingKeywordLines(body)) != 0 {
+	if !strings.Contains(body, "Closes `#7`") || strings.Contains(body, "## Issues") || len(extractClosingKeywordLines(body, githubClosingGrammar)) != 0 {
 		t.Fatalf("drafted closing reference not neutralized:\n%s", body)
 	}
 }
@@ -99,7 +100,7 @@ func TestPRStep_ClosesRendersOnlyInIssuesSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := readPRBodyFile(t, bodyFile)
-	if got := strings.Join(extractClosingKeywordLines(body), "|"); got != "Closes #95" || !strings.Contains(body, "## Issues\n\nCloses #95") {
+	if got := strings.Join(extractClosingKeywordLines(body, githubClosingGrammar), "|"); got != "Closes #95" || !strings.Contains(body, "## Issues\n\nCloses #95") {
 		t.Fatalf("closing lines = %q, want only the Issues section's Closes #95:\n%s", got, body)
 	}
 }
@@ -108,11 +109,11 @@ func TestNeutralizeClosingReferences(t *testing.T) {
 	t.Parallel()
 	in := "Fixes #12 and resolved: owner/repo#3\n- closes #4.\nsee #5, fixes `#6`, `Fixes #7`\n```\nCloses #8\n```\n    Fixes #9"
 	want := "Fixes `#12` and resolved: `owner/repo#3`\n- closes `#4`.\nsee #5, fixes `#6`, `Fixes #7`\n```\nCloses #8\n```\n    Fixes #9"
-	got := neutralizeClosingReferences(in)
+	got := neutralizeGitHubClosingReferences(in)
 	if got != want {
 		t.Fatalf("neutralizeClosingReferences = %q, want %q", got, want)
 	}
-	if again := neutralizeClosingReferences(got); again != got {
+	if again := neutralizeGitHubClosingReferences(got); again != got {
 		t.Fatalf("neutralizeClosingReferences is not idempotent: %q", again)
 	}
 }
@@ -121,11 +122,11 @@ func TestNeutralizeClosingReferencesURLForm(t *testing.T) {
 	t.Parallel()
 	in := "Fixes https://github.com/o/r/issues/12\nresolves: http://ghe.example.com:8080/o/r/pull/3.\nsee https://github.com/o/r/issues/5, `Closes https://github.com/o/r/issues/6`"
 	want := "Fixes `https://github.com/o/r/issues/12`\nresolves: `http://ghe.example.com:8080/o/r/pull/3`.\nsee https://github.com/o/r/issues/5, `Closes https://github.com/o/r/issues/6`"
-	got := neutralizeClosingReferences(in)
+	got := neutralizeGitHubClosingReferences(in)
 	if got != want {
 		t.Fatalf("neutralizeClosingReferences = %q, want %q", got, want)
 	}
-	if again := neutralizeClosingReferences(got); again != got {
+	if again := neutralizeGitHubClosingReferences(got); again != got {
 		t.Fatalf("neutralizeClosingReferences is not idempotent: %q", again)
 	}
 }
@@ -140,7 +141,7 @@ func TestNeutralizeClosingReferencesLeavesHTMLCodeUnchanged(t *testing.T) {
 	}
 	in := "Fixes #3 via " + rendered + " then fixes #4\n<pre>\nCloses #5\n</pre>\nresolves #6"
 	want := "Fixes `#3` via " + rendered + " then fixes `#4`\n<pre>\nCloses #5\n</pre>\nresolves `#6`"
-	if got := neutralizeAttestationMarkers(in); got != want {
+	if got := neutralizeAttestationMarkers(scm.ProviderGitHub, in); got != want {
 		t.Fatalf("neutralizeAttestationMarkers = %q, want %q", got, want)
 	}
 }
@@ -276,7 +277,7 @@ func TestPRStep_ClosesFailsInsteadOfSkippingWhenHostUnavailable(t *testing.T) {
 func TestClosingKeywordLinesAcceptPunctuationAndOrderedLists(t *testing.T) {
 	t.Parallel()
 	body := "Fixes #4.\n1. Closes #5\n2) Resolves owner/repo#6;\nThis fixes #7 partly.\n"
-	got := strings.Join(extractClosingKeywordLines(body), "|")
+	got := strings.Join(extractClosingKeywordLines(body, githubClosingGrammar), "|")
 	if got != "Fixes #4.|1. Closes #5|2) Resolves owner/repo#6;" {
 		t.Fatalf("extractClosingKeywordLines() = %q", got)
 	}
@@ -305,7 +306,7 @@ func TestPRStep_OwnRepositoryQualifiedReferenceRendersOnce(t *testing.T) {
 	if _, err := (&PRStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
-	lines := extractClosingKeywordLines(readPRBodyFile(t, bodyFile))
+	lines := extractClosingKeywordLines(readPRBodyFile(t, bodyFile), githubClosingGrammar)
 	if got := strings.Join(lines, "|"); got != "Closes #95|Closes other/repo#95" {
 		t.Fatalf("closing lines = %q, want #95 and other/repo#95 exactly once each", got)
 	}
@@ -316,5 +317,313 @@ func TestPRStep_OwnRepositoryQualifiedReferenceRendersOnce(t *testing.T) {
 	}
 	if err := verifyClosingIssuesInBody("Closes test/repo#95\n", authored); err != nil {
 		t.Fatalf("verifyClosingIssuesInBody() = %v", err)
+	}
+}
+
+// The GitLab half of the grammar: its default closing pattern adds the gerunds
+// and "implements" to GitHub's words and lets a project path nest under
+// subgroups. A line GitHub would not close on must not be counted as a closing
+// declaration there either, or an author's ordinary sentence would silently
+// cover a requested reference.
+func TestClosingGrammar_GitLabWordsAndNestedReferences(t *testing.T) {
+	t.Parallel()
+
+	for _, line := range []string{
+		"Implements #12",
+		"Implement #12",
+		"Fixing #12",
+		"Resolving #12",
+		"- Closes: #12.",
+		"Closes group/subgroup/project#12",
+		"Fixes #1, #2 and #3",
+		"Closes issues #12",
+	} {
+		if got := extractClosingKeywordLines(line, gitlabClosingGrammar); len(got) != 1 {
+			t.Fatalf("extractClosingKeywordLines(%q, gitlab) = %v, want the line recognised", line, got)
+		}
+	}
+	// A URL closing reference is protected from generated prose (the neutralizer
+	// covers it) but is not a comparable target, so it is deliberately not a
+	// closing *line* here: nothing links its host and path back to a
+	// canonicalizable reference.
+	if got := extractClosingKeywordLines("Closes https://gitlab.example.com/group/subgroup/project/-/issues/12", gitlabClosingGrammar); len(got) != 0 {
+		t.Fatalf("extractClosingKeywordLines(URL, gitlab) = %v, want none", got)
+	}
+	if got := neutralizeGitLabClosingReferences("Closes https://gitlab.example.com/group/subgroup/project/-/issues/12"); !strings.Contains(got, `https\://`) {
+		t.Fatalf("neutralizeGitLabClosingReferences(URL) = %q, want the URL reference neutralized", got)
+	}
+	for _, line := range []string{"Implements #12", "Fixing #12"} {
+		if got := extractClosingKeywordLines(line, githubClosingGrammar); len(got) != 0 {
+			t.Fatalf("extractClosingKeywordLines(%q, github) = %v, want none - GitHub has no such keyword", line, got)
+		}
+	}
+}
+
+// Everything the pipeline publishes for a GitLab merge request has to be
+// *not* a closing reference: GitLab's extractor runs a plain regexp over the
+// raw description, so - unlike on GitHub - a code span does not neutralize a
+// reference and a fenced block is not exempt. The reference itself is broken.
+func TestNeutralizeGitLabClosingReferences(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"implements", "Implements #12", `Implements \#12`},
+		{"gerund", "Fixing #12", `Fixing \#12`},
+		{"issues prefix", "Closes issues #12", `Closes issues \#12`},
+		{"nested project path", "Closes group/subgroup/project#12", `Closes group/subgroup/project\#12`},
+		{"issue url", "Closes https://gitlab.example.com/group/project/-/issues/12", `Closes https\://gitlab.example.com/group/project/-/issues/12`},
+		{"inside a fenced block", "```text\nFixes #12\n```", "```text\nFixes \\#12\n```"},
+		{"inside an indented block", "    Closes #12", `    Closes \#12`},
+		{"a reference without a keyword", "Related to #12", "Related to #12"},
+		{"an already neutralized reference", "Fixes `#12`", "Fixes `#12`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := neutralizeGitLabClosingReferences(tc.in)
+			if got != tc.want {
+				t.Fatalf("neutralizeGitLabClosingReferences(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if again := neutralizeGitLabClosingReferences(got); again != got {
+				t.Fatalf("neutralization is not idempotent: %q -> %q", got, again)
+			}
+		})
+	}
+}
+
+// GitHub's neutralizer is untouched: the GitLab-only words stay ordinary text,
+// and the code-block exemption it relies on stays exactly as it was.
+func TestNeutralizeGitHubClosingReferencesLeavesGitLabOnlyFormsAlone(t *testing.T) {
+	t.Parallel()
+
+	in := "Implements #12\nFixing #13\n```\nFixes #14\n```\nFixes #15"
+	want := "Implements #12\nFixing #13\n```\nFixes #14\n```\nFixes `#15`"
+	if got := neutralizeGitHubClosingReferences(in); got != want {
+		t.Fatalf("neutralizeGitHubClosingReferences() = %q, want %q", got, want)
+	}
+}
+
+// gitlabClosingContext is a StepContext whose repository resolves to GitLab, so
+// the closing grammar, the project path, and the rendered references all come
+// from the GitLab side.
+func gitlabClosingContext(refs ...string) *pipeline.StepContext {
+	return &pipeline.StepContext{
+		Ctx:              context.Background(),
+		Repo:             &db.Repo{ID: "repo-1", UpstreamURL: "https://gitlab.com/group/subgroup/project.git"},
+		Run:              &db.Run{ID: "run-1"},
+		Config:           &config.Config{},
+		ClosingIssueRefs: refs,
+	}
+}
+
+// A requested reference renders in the Issues section and verifies against the
+// published body on GitLab, including a cross-project reference to a project
+// nested under subgroups.
+func TestIssuesSectionOnGitLabRendersAndVerifiesEveryReferenceForm(t *testing.T) {
+	t.Parallel()
+
+	sctx := gitlabClosingContext("42", "77", "other/subgroup/project#5")
+	section := issuesSection(sctx, "")
+	want := "## Issues\n\nCloses #42\nCloses #77\nCloses other/subgroup/project#5"
+	if section != want {
+		t.Fatalf("issuesSection() =\n%s\nwant:\n%s", section, want)
+	}
+	if err := verifyClosingIssuesInBody("body\n\n"+section+"\n", sctx); err != nil {
+		t.Fatalf("verifyClosingIssuesInBody() = %v", err)
+	}
+	if err := verifyClosingIssuesInBody("## Issues\n\nCloses #42\n", sctx); err == nil {
+		t.Fatal("verifyClosingIssuesInBody() accepted a body missing two requested references")
+	}
+}
+
+// The author's own closing line covers a requested reference on GitLab for the
+// words GitLab closes on - including "Implements", which GitHub does not.
+func TestIssuesSectionAuthorCoverageFollowsTheGitLabGrammar(t *testing.T) {
+	t.Parallel()
+
+	sctx := gitlabClosingContext("42")
+	if got := issuesSection(sctx, "## Overview\n\nImplements #42\n"); got != "" {
+		t.Fatalf("issuesSection() = %q, want the author's GitLab closing line to cover #42", got)
+	}
+	// The same author text on GitHub closes nothing, so the reference is
+	// rendered rather than silently assumed closed.
+	sctx.Repo.UpstreamURL = "https://github.com/owner/repo.git"
+	if got := issuesSection(sctx, "## Overview\n\nImplements #42\n"); !strings.Contains(got, "Closes #42") {
+		t.Fatalf("issuesSection() = %q, want the reference rendered on GitHub", got)
+	}
+}
+
+// closesBoundaryHost is a Host that only declares the capabilities a case needs
+// plus the body read every closing-reference publication verifies against.
+type closesBoundaryHost struct {
+	scm.Host
+	caps scm.Capabilities
+}
+
+func (h closesBoundaryHost) Capabilities() scm.Capabilities { return h.caps }
+
+func (h closesBoundaryHost) GetPRContent(context.Context, *scm.PR) (scm.PRContent, error) {
+	return scm.PRContent{Title: "title", Body: "body"}, nil
+}
+
+// claimClosingIssueRefs is the one gate --closes passes through: it localizes
+// the run's references, fails closed on a reference shape the hosting provider
+// would misread, and fails closed when the provider does not close issues from
+// the body at all.
+func TestClaimClosingIssueRefsProviderBoundaries(t *testing.T) {
+	t.Parallel()
+
+	closingCaps := scm.Capabilities{ClosingReferences: true}
+	for _, tc := range []struct {
+		name     string
+		upstream string
+		provider scm.Provider
+		caps     scm.Capabilities
+		refs     []string
+		wantRefs []string
+		wantErr  string
+	}{
+		{
+			name:     "gitlab accepts bare, own-project nested, and cross-project references",
+			upstream: "https://gitlab.com/group/subgroup/project.git",
+			provider: scm.ProviderGitLab,
+			caps:     closingCaps,
+			refs:     []string{"42", "GROUP/Subgroup/Project#42", "other/project#7"},
+			wantRefs: []string{"42", "other/project#7"},
+		},
+		{
+			name:     "github refuses a nested subgroup reference",
+			upstream: "https://github.com/owner/repo.git",
+			provider: scm.ProviderGitHub,
+			caps:     closingCaps,
+			refs:     []string{"group/subgroup/project#42"},
+			wantErr:  "GitLab subgroup reference",
+		},
+		{
+			name:     "a provider that cannot close issues from the body is refused",
+			upstream: "https://bitbucket.org/test/repo.git",
+			provider: scm.ProviderBitbucket,
+			caps:     scm.Capabilities{},
+			refs:     []string{"42"},
+			wantErr:  "does not support closing references",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Repo.UpstreamURL = tc.upstream
+			if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, tc.refs); err != nil {
+				t.Fatal(err)
+			}
+
+			host := closesBoundaryHost{caps: tc.caps}
+			err := claimClosingIssueRefs(sctx, host, tc.provider)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("claimClosingIssueRefs() error = %v, want %q", err, tc.wantErr)
+				}
+				if len(sctx.ClosingIssueRefs) != 0 {
+					t.Fatalf("refs = %v, want none claimed on a refusal", sctx.ClosingIssueRefs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("claimClosingIssueRefs() error = %v", err)
+			}
+			if got := strings.Join(sctx.ClosingIssueRefs, ","); got != strings.Join(tc.wantRefs, ",") {
+				t.Fatalf("refs = %q, want %q", got, strings.Join(tc.wantRefs, ","))
+			}
+		})
+	}
+}
+
+// End to end on GitLab: a run carrying --closes publishes the reference in the
+// merge request description and verifies it by reading the description back.
+// The referenceless prose around it stays neutralized, including a drafted
+// closing sentence - GitLab's closing pattern is a raw regex over the whole
+// description, so that sentence in the body would otherwise close the issue.
+func TestPRStep_GitLabClosesRendersAndVerifiesOnTheMR(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, _, stateFile := fakeGlabWithMRState(t)
+
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		payload := json.RawMessage(`{"title":"fix: implement the widget","body":"## What Changed\n\n- implement the widget\n\nImplements #95"}`)
+		return &agent.Result{Output: payload}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"95", "other/subgroup/project#7"}); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	state, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("the merge request was never published: %v", err)
+	}
+	var published struct {
+		Description *string `json:"description"`
+	}
+	if err := json.Unmarshal(state, &published); err != nil {
+		t.Fatal(err)
+	}
+	if published.Description == nil {
+		t.Fatal("the created merge request carried no description")
+	}
+	body := *published.Description
+	if !strings.Contains(body, "## Issues\n\nCloses #95\nCloses other/subgroup/project#7") {
+		t.Fatalf("published body lacks the requested closing references:\n%s", body)
+	}
+	if err := verifyClosingIssuesInBody(body, sctx); err != nil {
+		t.Fatalf("verifyClosingIssuesInBody() = %v", err)
+	}
+	lines := extractClosingKeywordLines(body, gitlabClosingGrammar)
+	if got := strings.Join(lines, "|"); got != "Closes #95|Closes other/subgroup/project#7" {
+		t.Fatalf("closing lines = %q, want exactly the two requested references:\n%s", got, body)
+	}
+	if !strings.Contains(body, `Implements \#95`) {
+		t.Fatalf("the drafted closing sentence was published live:\n%s", body)
+	}
+}
+
+// The same run on GitHub publishes the GitHub spelling of protection: the
+// drafted sentence's reference is code-spanned, and no backslash escape appears.
+func TestPRStep_GitHubClosesKeepsGitHubNeutralization(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, _ := fakeGH(t, "")
+	bodyFile := envEntry(env, "FAKE_CLI_PR_BODY_FILE")
+
+	ag := &mockAgent{name: "test", runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		payload := json.RawMessage(`{"title":"fix: implement the widget","body":"## What Changed\n\n- implement the widget\n\nImplements #95"}`)
+		return &agent.Result{Output: payload}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"95"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	body := readPRBodyFile(t, bodyFile)
+	if !strings.Contains(body, "## Issues\n\nCloses #95") {
+		t.Fatalf("published body lacks the requested closing reference:\n%s", body)
+	}
+	// "Implements" is not a GitHub closing keyword, so it stays verbatim.
+	if !strings.Contains(body, "Implements #95") || strings.Contains(body, `Implements \#95`) {
+		t.Fatalf("GitHub body neutralization changed:\n%s", body)
 	}
 }

@@ -221,8 +221,15 @@ type ReviewBot struct {
 // ReviewBots is the registry of supported review bots. Both halves of the
 // integration - check identity and comment authorship - read it, so adding a
 // bot is one entry here.
+//
+// Identity is spelled per provider, and the spellings do not transfer. GitHub
+// identifies the bot by its App slug on the check suite and by the
+// "<app-slug>[bot]" login on its review comments. GitLab has neither: a job
+// names no publishing application, and the bot comments from an ordinary
+// account. Greptile's GitLab account is "greptileai" (gitlab.com/greptileai),
+// which is why the comment half carries that login as well.
 var ReviewBots = []ReviewBot{
-	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps"}},
+	{AppSlug: "greptile-apps", Logins: []string{"greptile-apps[bot]", "greptile-apps", "greptileai"}},
 }
 
 // ReviewBotForApp returns the registered review bot that publishes checks
@@ -274,6 +281,12 @@ type Capabilities struct {
 	FailedCheckLogs bool
 	MergedProof     bool
 	ReviewComments  bool
+	// ClosingReferences declares that the provider closes issues from a
+	// closing keyword in the pull request body ("Closes #42"), which is what
+	// makes an explicitly requested --closes reference render and verify. False
+	// keeps the step failing closed rather than publishing a reference the
+	// forge would ignore, leaving the issue silently open.
+	ClosingReferences bool
 }
 
 var (
