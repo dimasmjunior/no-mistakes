@@ -2185,13 +2185,6 @@ func (e *Executor) completeRun(run *db.Run, repo *db.Repo) error {
 // honest - a caller can tell "checks passed, waiting on a human merge decision"
 // apart from a run that ended because the PR merged or closed - and keeps it
 // stable, because the merge decision was never this run's to observe.
-//
-// The verdict is derived from durable state, not from in-memory execution, so
-// the live path and every crash-recovery path (executeRecoveredRemainder,
-// skipRecoveredRemainder) record the same outcome: readiness persisted by the
-// step, a PR state the run observed, and a CI step that completed rather than
-// being skipped. A merged or closed PR, an unknown PR state, a run that never
-// established readiness, and a skipped CI step all stay an ordinary completion.
 func (e *Executor) terminalRunStatus(run *db.Run) (types.RunStatus, error) {
 	if run == nil {
 		return "", fmt.Errorf("cannot complete a nil run")

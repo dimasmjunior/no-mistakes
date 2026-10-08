@@ -1179,6 +1179,27 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 
 	placeholders, args := recoveryExclusionClause(preserved)
 
+	readyArgs := []any{types.RunChecksPassed, ts, types.RunPending, types.RunRunning, types.StepCI, types.StepStatusCompleted}
+	readyArgs = append(readyArgs, args...)
+	readyResult, err := tx.Exec(
+		`UPDATE runs SET status = ?, error = NULL, push_active = 0,
+		 awaiting_agent_since = NULL, updated_at = ?
+		 WHERE status IN (?, ?) AND ci_ready_at IS NOT NULL
+		   AND lower(trim(pr_state)) = 'open'
+		   AND EXISTS (
+		       SELECT 1 FROM step_results ci
+		       WHERE ci.run_id = runs.id AND ci.step_name = ? AND ci.status = ?
+		   )`+placeholders,
+		readyArgs...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover completed CI runs: %w", err)
+	}
+	readyCount, err := readyResult.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("completed CI rows affected: %w", err)
+	}
+
 	// A daemon restart during the long-lived CI monitor should not turn an
 	// already-pushed PR into a failed run. Recover those runs before the broad
 	// failure update below so the hard-fail path keeps handling mid-pipeline
@@ -1290,7 +1311,7 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
-	return int(ciCount + count), nil
+	return int(readyCount + ciCount + count), nil
 }
 
 func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
