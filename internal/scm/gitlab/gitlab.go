@@ -559,7 +559,9 @@ func (h *Host) getChecksForHead(ctx context.Context, pr *scm.PR, headSHA string)
 	if err != nil {
 		return nil, err
 	}
-	if revision := after.sourceRevision(); !sameCommitSHA(revision, headSHA) {
+	if revision := after.sourceRevision(); revision == "" {
+		return nil, fmt.Errorf("merge request %s reported no source commit", pr.Number)
+	} else if !sameCommitSHA(revision, headSHA) {
 		return nil, fmt.Errorf("%w: merge request %s source commit changed during check discovery from %s to %s", scm.ErrHeadChanged, pr.Number, headSHA, revision)
 	}
 	return checks, nil
@@ -829,7 +831,9 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, pr *scm.PR, _ str
 		if err != nil {
 			return nil, fmt.Errorf("re-read GitLab merge request after selected logs: %w", err)
 		}
-		if revision := after.sourceRevision(); !sameCommitSHA(revision, headSHA) {
+		if revision := after.sourceRevision(); revision == "" {
+			return nil, fmt.Errorf("merge request %s reported no source commit", pr.Number)
+		} else if !sameCommitSHA(revision, headSHA) {
 			return nil, fmt.Errorf("%w: merge request %s source commit changed during log retrieval from %s to %s", scm.ErrHeadChanged, pr.Number, headSHA, revision)
 		}
 	}

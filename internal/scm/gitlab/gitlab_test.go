@@ -1497,3 +1497,48 @@ func TestIsDraftTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestFinalSourceReadWithoutRevisionIsAProviderError(t *testing.T) {
+	t.Parallel()
+	// An incomplete provider response is not evidence of a moved head. The
+	// error must reach the monitor's read-error budget, with no usable results.
+	for _, operation := range []string{"checks", "selected logs", "combined logs"} {
+		t.Run(operation, func(t *testing.T) {
+			host := New(gitlabSequenceCmdFactory(t, map[string][]gitlabTestResponse{
+				"glab mr view 123 --output json": {
+					gitlabMRAtHead(deliveredSHA, deliveredSHA, "refs/heads/feature"),
+					{stdout: `{"iid":123}`},
+				},
+				"glab api --paginate projects/group%2Fproject/pipelines/77/jobs": {
+					{stdout: `[{"id":55,"name":"lint","status":"failed"}]`},
+				},
+				"glab ci trace 55": {{stdout: "lint failed\n"}},
+			}), nil, "gitlab.example.com", "group/project")
+			pr := &scm.PR{Number: "123", HeadSHA: deliveredSHA}
+			var err error
+			switch operation {
+			case "checks":
+				var checks []scm.Check
+				checks, err = host.GetChecks(context.Background(), pr)
+				if len(checks) != 0 {
+					t.Fatalf("unverified checks returned: %+v", checks)
+				}
+			case "selected logs":
+				var logs []scm.FailedCheckLog
+				logs, err = host.FetchFailedCheckTargetLogs(context.Background(), pr, "", deliveredSHA, []scm.CheckTarget{{ProviderID: "gitlab-job:55"}})
+				if len(logs) != 0 {
+					t.Fatalf("unverified logs returned: %+v", logs)
+				}
+			case "combined logs":
+				var logs string
+				logs, err = host.FetchFailedCheckLogs(context.Background(), pr, "", deliveredSHA, []string{"lint"})
+				if logs != "" {
+					t.Fatalf("unverified logs returned: %s", logs)
+				}
+			}
+			if err == nil || errors.Is(err, scm.ErrHeadChanged) || !strings.Contains(err.Error(), "no source commit") {
+				t.Fatalf("error = %v, want missing-source provider error", err)
+			}
+		})
+	}
+}

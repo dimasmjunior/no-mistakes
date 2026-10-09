@@ -594,7 +594,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// the wait, and the readiness signal is cleared because the
 				// previous observation was for a different head.
 				consecutiveCheckErrs = 0
-				lastMonitorLog = logCIMonitorStatus(sctx, fmt.Sprintf("waiting for the delivered commit's own checks: %v", err), lastMonitorLog)
+				lastMonitorLog = logCIMonitorStatus(sctx, fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err), lastMonitorLog)
 			} else {
 				clearCIMonitorReady(sctx)
 				lastMonitorLog = ""
