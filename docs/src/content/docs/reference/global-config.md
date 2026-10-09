@@ -313,11 +313,20 @@ Availability, authentication, and model-specific reasoning support remain Pi's
 responsibility; no-mistakes does not inspect subscriptions or query quotas.
 
 A pin applies to **every pipeline duty**, including reviewer and fixer roles.
-The effective trusted agent selection must be Pi-only (no `auto`, non-Pi
-fallbacks, or non-Pi `review_agents`), including `agent` / fallbacks from the
-trusted default-branch `.no-mistakes.yaml`. That check runs before any active
-validation is cancelled. Pi role-specific model/effort values are
-superseded by the run pin. Native `--model`, `--provider`, `--models`,
+The effective agent selection must be Pi-only (no `auto`, non-Pi fallbacks, or
+non-Pi `review_agents`). Under the default trust policy, a nonempty `agent` in
+the freshly fetched, trusted default-branch `.no-mistakes.yaml` replaces the
+global scalar or fallback list for this check, just as it does for an ordinary
+run. This lets one project opt into Pi profiles with trusted `agent: pi` while
+other projects keep a global `agent: auto` or another global selection. When the
+trusted project config does not select an agent, the global selection must itself
+be Pi-only. If the trusted default branch enables `allow_repo_commands: true`,
+the submitted branch instead becomes the source of any repository `agent`
+override. Without that opt-in, an `agent: pi` that exists only on the submitted
+feature branch cannot authorize the profile. Unreadable or malformed
+submitted/trusted config refuses the profile. These checks run before any active
+validation is cancelled. Pi role-specific model/effort values are superseded by
+the run pin. Native `--model`, `--provider`, `--models`,
 `--thinking` (including `--flag=value`), or `--` in
 `agent_args_override.pi` conflict at launch: move defaults to `agent_config.pi`
 rather than combining two selection mechanisms.
@@ -1220,7 +1229,9 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. On GitHub.com/GHEC and GitLab, supported image and video artifacts are also uploaded when the PR or MR is rendered; see `attach_media` below.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. Media uploads are enabled by default on GitHub.com/GHEC and GitLab through `attach_media: true`.
+After upgrading, GitLab now uploads supported image and video evidence to the project's uploads store and embeds it in the merge request description, where earlier versions left local references.
+To opt out, set `attach_media: false` in global or repository config and leave `store_in_repo` off. Evidence-branch publication remains opt-in through `store_in_repo: true` on both forges; enabling it also enables media uploads.
 
 |      |          |
 | ---- | -------- |
@@ -1241,11 +1252,11 @@ On GitHub.com and GitHub Enterprise Cloud, image and video artifacts that pass G
 On GitHub, the testing section embeds images as Markdown and videos as bare URLs.
 On GitLab, the PR step uploads png, jpg, jpeg, gif, webp, svg, bmp, avif, mp4, webm, mov, m4v, and ogv files to the project's uploads API through `glab`, using the authentication and API settings glab has for that host. Only non-empty regular files inside the run's evidence directory are uploaded, and symbolic links are refused whether they point at a file or a directory. The returned project-relative URL is validated, then rendered with the artifact label as alt text; GitLab turns that image syntax into a video player for video files. The instance's own upload limits apply. The same `attach_media` and `store_in_repo` settings turn uploads on for both forges.
 Uploads are cached per run, path, and content digest, so regenerating the description does not upload unchanged evidence again; a file whose contents changed is uploaded again.
-An upload error or refusal is logged, and the artifact keeps the rendering it would otherwise have: the commit-pinned evidence-branch link when there is one, otherwise a local reference. A failed upload never blocks PR or MR publication and never inserts a guessed attachment URL.
+Uploads fail closed. An upload error or refusal is logged, and the artifact keeps its existing rendering: the commit-pinned evidence-branch link when there is one, otherwise a local reference. A failed upload never blocks PR or MR publication and never inserts a dead or guessed attachment URL.
 Other providers and GitHub Enterprise Server do not support these uploads, and GitHub App or Actions tokens cannot upload GitHub user-attachments. Text artifacts stay inlined.
 When `store_in_repo` is true for a GitHub.com or GitLab repository, the PR step copies the evidence directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when GitHub fork routing is configured), pushes it, and links the artifacts from the description. Text artifacts such as logs and transcripts are still shown inline, with a commit-pinned link to the file added.
 When both `attach_media` and `store_in_repo` apply, the testing section shows the uploaded image or video next to its commit-pinned evidence-branch link.
-The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
+The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links are pinned to the evidence commit rather than the branch, so later runs cannot change the evidence referenced by an older description.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 `branch` must be a valid Git branch name; an invalid value fails the config with the offending key and value.
 The publisher never force-pushes. It appends to the fetched evidence-branch tip with a fast-forward push, retries one lost race, and refuses to use the run branch, default branch, or an existing branch whose tip lacks the `.no-mistakes-evidence` marker.
