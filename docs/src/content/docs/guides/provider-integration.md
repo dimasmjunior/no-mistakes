@@ -34,7 +34,8 @@ What you do not get is PR automation and CI monitoring.
 | **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported | supported when plugin declares `mergeable_state` |
 | **Mergeability polling** | `gh` CLI | `glab` CLI | `forgejo-axi` | not supported | `az` CLI | not supported | supported when plugin declares `mergeable_state` |
 | **Failed check log fetching** | `gh` CLI | `glab` CLI | `forgejo-axi` when runtime routes are available | supported | not yet | supported | supported when plugin declares `failed_check_logs` |
-| **Review-bot findings and comments at the CI gate** | GitHub via `gh` CLI | not supported | not supported | not supported | not supported | not supported | not supported |
+| **Review-bot findings and comments at the CI gate** | GitHub via `gh` CLI (check identity by app slug, comments from review threads) | GitLab via `glab` CLI (comments from unresolved discussion notes, matched by the bot's login; no check identity) | not supported | not supported | not supported | not supported | not supported |
+| **[Explicit issue closure](/no-mistakes/reference/cli/#closing-issues)** (`axi run --closes`) | `gh` CLI | `glab` CLI | not supported | not supported | not supported | not supported | not supported |
 | **[Transient-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)** (cancellations and pre-run infra failures) | `gh` CLI | not supported | not supported | not supported | not supported | not supported | not supported |
 
 ## What changes when provider wiring is present
@@ -126,6 +127,8 @@ glab auth login
 - CI pipeline status polling until the merge request is merged, closed, or the configured `ci_timeout` idle window elapses
 - Failed job trace fetching (`glab ci trace`) for the CI auto-fix step
 - Merge-conflict polling and auto-fix, same as GitHub
+- A supported review bot's unresolved merge request discussion notes as `ask-user` CI findings under [`ci.review_bot_comments: always`](/no-mistakes/reference/repo-config/#cireview_bot_comments) (see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for the identity and filtering rules)
+- Explicit issue closure through `axi run --closes`; the reference is rendered as a `Closes` line in the merge request description and verified on the live merge request. A cross-project reference may nest under subgroups (`group/subgroup/project#95`), and the same nested form is refused on a provider that would read it as a different repository's reference
 
 When no-mistakes updates an existing merge request, it reads the live title and preserves any GitLab draft marker. If `glab mr view` fails or returns an empty title, the update stops instead of risking a change from draft to ready.
 
@@ -133,7 +136,7 @@ When no-mistakes updates an existing merge request, it reads the live title and 
 
 Install [`forgejo-axi`](https://github.com/escidmore/forgejo-axi) and make it available on `PATH`. It currently installs from source with Node.js 20 or newer; set [`forgejo_axi_path`](/no-mistakes/reference/global-config/#forgejo_axi_path) when the executable lives elsewhere.
 
-Give the daemon a Forgejo token through either the generic `FORGEJO_TOKEN` variable or forgejo-axi's host-scoped token variable. Configure `FORGEJO_BASE_URL` for SSH origins and unrecognized self-hosted HTTPS hostnames. The [environment reference](/no-mistakes/reference/environment/#forgejo_base_url) owns the exact base-URL and host-key rules.
+Give the daemon a Forgejo token through either the generic `FORGEJO_TOKEN` variable or forgejo-axi's host-scoped token variable. Configure `FORGEJO_BASE_URL` for SSH origins and unrecognized self-hosted HTTPS hostnames. When the instance serves SSH from another hostname - its own `SSH_DOMAIN` setting, for example `ssh.forgejo.example` beside a web host of `forgejo.example` - also set [`FORGEJO_SSH_DOMAIN`](/no-mistakes/reference/environment/#forgejo_ssh_domain) to that hostname, or the SSH origin cannot be matched to the configured instance. The [environment reference](/no-mistakes/reference/environment/#forgejo_base_url) owns the exact base-URL and host-key rules.
 
 Verify without mutating a deployed Forgejo instance:
 
@@ -319,7 +322,7 @@ PR retargeting are optional capabilities the plugin declares in `status`.
 
 **What you don't get:**
 
-- Fork PR routing, review-bot findings, transient-check reruns, and `--closes`
+- Fork PR routing, review-bot findings, transient-check reruns, and `--closes` (a plugin declares neither the review-comment nor the closing-reference capability)
 
 no-mistakes validates every plugin answer - PR identity, URL shape, check
 buckets, and merged-proof head - and fails closed on anything malformed, on a

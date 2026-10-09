@@ -8,12 +8,12 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
+Non-executing fields (`ignore_patterns`, core-step `auto_fix`, `commit`, `intent`, `test`, `pr.title_format`, and `providers`) are still read from the pushed branch, except `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, and `test.evidence.branch`.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -523,7 +523,40 @@ gates:
     command: "make mutation"
 ```
 
-A gate runs its command in the run worktree through the platform shell, `sh -c` on POSIX or `cmd.exe /c` on Windows, and passes on exit code 0. Gate commands report through their exit code and combined output; there is no structured findings-file protocol. Agent gates are not supported. An entry with `instructions` fails config parsing so it cannot be mistaken for a command gate.
+A gate runs its command in the run worktree through the platform shell, `sh -c` on POSIX or `cmd.exe /c` on Windows. A command that ignores `NO_MISTAKES_FINDINGS_FILE` passes on exit code 0 and reports one error finding on a non-zero exit, as before. Agent gates are not supported. An entry with `instructions` fails config parsing so it cannot be mistaken for a command gate.
+
+#### Structured findings
+
+Before each command execution, including a re-check after a fix, no-mistakes creates an empty file in a private temporary directory outside the worktree and supplies its absolute path as `NO_MISTAKES_FINDINGS_FILE`. The command may write this JSON to that file:
+
+```json
+{
+  "findings": [
+    {
+      "id": "mutation-budget-low",
+      "severity": "error",
+      "file": "src/parser.go",
+      "line": 42,
+      "description": "Mutation score is below the configured budget",
+      "action": "ask-user"
+    }
+  ]
+}
+```
+
+This uses the existing pipeline finding shape. Each finding needs a non-empty `id`, unique within the file and stable across executions, a `severity` of `error`, `warning`, or `info`, and a non-empty `description`. IDs cannot contain commas or reuse IDs reserved by the pipeline. `file` and `line` are optional; a supplied line cannot be negative. `action` is optional and defaults to `ask-user`; accepted values are `auto-fix`, `ask-user`, and `no-op`. Enum values use these exact spellings. The report and each finding reject fields outside this schema.
+
+| Command exit | File | Gate verdict |
+|---|---|---|
+| 0 | Empty | Pass, unchanged |
+| Non-zero | Empty | Park with the existing exit-code error finding and command output |
+| 0 | Valid report | Any `error` parks the gate; warnings and info attach without failing the command verdict |
+| Non-zero | Valid report | Park with the reported findings and command output |
+| Any | Invalid or over-cap report | Park with one `error` finding explaining the problem, action `ask-user` |
+
+A report is limited to 1 MiB and 500 findings. The final encoded findings payload, including the command and log summary, must fit the portion of half the existing 1 MiB IPC frame left after the run's persisted findings and the refusal space reserved for every configured gate. The other half remains available for the envelope and other run state. JSON escaping can make the effective file cap lower than 1 MiB. A payload that cannot fit parks with one `error` finding naming its encoded size and the remaining transport budget, action `ask-user`; findings are never truncated to make a report fit. This fixed-size transport refusal omits the command summary, whose complete output remains in the gate's step log. Malformed JSON, a missing `findings` array, missing required fields, duplicate or unusable IDs, invalid severities or actions, unknown fields, and an unreadable or non-regular file also fail closed. An empty array is a valid report; an empty file opts out. The temporary directory is removed after the command is checked.
+
+Findings remain available in `axi status`, `axi logs`, and the TUI, and their IDs can be selected with `axi respond --action fix --findings <ids>`. Executor approval policy is unchanged: a zero-exit report containing only warnings or info still goes through the same approval rules as other steps. Warnings park, and an omitted action defaults to `ask-user`. A gate never starts an automatic repair, even when a reported finding says `auto-fix`.
 
 #### Placement
 
@@ -537,9 +570,9 @@ A run resolves this list once when it starts. Adding or removing a gate on the d
 
 #### Failure
 
-A failing gate parks the run for a decision instead of auto-fixing: a gate states a repository rule, so deciding that the change should be altered to satisfy it is the author's call, never the pipeline's.
+A failing gate parks by default. Trusted [`auto_fix.gates.<name>`](#auto_fix) can authorize bounded repairs of auto-fix-eligible findings. Any `ask-user` finding still parks the whole gate. The current exit-code-only failure is `ask-user`, so the budget has no effect until the [structured findings follow-up](https://github.com/kunchenguid/no-mistakes/issues/1027) supplies auto-fix-eligible findings.
 
-Answering that decision with `fix` is that authorization: the gate then runs a fix turn against the reported findings and the command that must exit `0`, then re-runs its check. The next verdict describes the repaired worktree. Answering `approve` accepts the change as it stands.
+Answering that decision with `fix` is that authorization: the gate then runs a fix turn against the reported findings and the command that must exit `0` without reporting error findings, then re-runs its check. The next verdict describes the repaired worktree. Answering `approve` accepts the change as it stands.
 
 Each gate keeps its own step log under the step name `gate.<anchor>.<name>`, so a gate declared as `name: mutation-budget` with `after: test` is read with `no-mistakes axi logs --step gate.test.mutation-budget`.
 
@@ -619,7 +652,7 @@ This is a staging guard, not an agent filesystem sandbox or a check on semantic 
 
 ### auto_fix
 
-Override auto-fix attempt limits for specific steps. Fields not set here inherit from global config.
+Override auto-fix attempt limits for specific steps. Core-step fields not set here inherit from global config. Gate budgets are repository-only and default to `0`.
 
 | | |
 |---|---|
@@ -633,6 +666,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | `auto_fix.document` | `int` | Inherits from global (default `3`) |
 | `auto_fix.lint` | `int` | Inherits from global (default `3`) |
 | `auto_fix.ci` | `int` | Inherits from global (default `3`) |
+| `auto_fix.gates.<name>` | Non-negative `int` | `0`, trusted default branch only |
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
@@ -640,6 +674,18 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 The CI step reports each settled failure as an `auto-fix` finding and the shared auto-fix loop drives its fix rounds, exactly as for review; `ask-user` findings (a supported review bot's red check, a provider-attributed check no rerun will replace) never consume an attempt.
+
+For an extra gate, use its declared `name`, not its full step name:
+
+```yaml
+auto_fix:
+  gates:
+    mutation-budget: 2
+```
+
+This budget is honored only from the trusted default-branch config, even with `allow_repo_commands: true`. Global `auto_fix.gates` entries are rejected, including empty maps. Unknown gate names, negative budgets, and non-integer values are rejected.
+
+With a positive budget, a gate with at least one `auto-fix` finding and no `ask-user` findings uses the shared fix loop. The fixer receives the findings and decision history, commits repairs like Test, and re-runs the gate. It parks when the budget is exhausted or a repair returns as many or more findings than the round it answered. Changing finding IDs without reducing the count is not progress. Manual fix, approve, and skip responses remain unchanged. This budget does not require non-waivable command success under unattended AXI.
 
 Legacy alias: `auto_fix.babysit`.
 
@@ -775,15 +821,17 @@ ci:
 
 A review bot can conclude its check `success` while leaving an unresolved comment. The comment most likely to be missed that way is the one on the pipeline's own CI repair commit, which no human has reviewed yet.
 
+Where the comments come from, and how the bot is identified, is provider-specific. On GitHub they are the bot's unresolved review-thread comments, and the bot is identified by the check suite's app slug. On GitLab they are the merge request's unresolved discussion notes, and the bot is identified by the login it comments as (Greptile posts there as `greptileai`); a GitLab job names no publishing application, so no GitLab check can be attributed to a bot.
+
 Under `always`:
 
-- Comments are read only once every check on the current head has completed green, the bot's included when it has registered one, so a review still being posted is not raced. A bot that has not registered a check on the head yet has its comments read too, since its threads from an earlier head can still be unresolved. A head with no checks at all under trusted [`no_ci: true`](#no_ci) has them read the same way before it is reported ready. Only unresolved threads count, and the same per-gate bound applies as for a red check.
+- Comments are read only once every check on the current head has completed green, the bot's included when it has registered one, so a review still being posted is not raced. A bot that has not registered a check on the head yet has its comments read too, since its threads from an earlier head can still be unresolved. A head with no checks at all under trusted [`no_ci: true`](#no_ci) has them read the same way before it is reported ready. Only unresolved threads count, and the same per-gate bound applies as for a red check. A GitLab note counts only when it is resolvable, unresolved, not a system note, and authored by a registered bot, so an ordinary merge request comment is never a finding.
 - The findings never spend an `auto_fix.ci` attempt. A human decides: approve, skip, or select comments for a fix round.
 - Approving over them records the CI step as passed with an override naming the comments, never as a clean pass.
 - A comment list that cannot be read is not treated as empty: `checks-passed` is withheld, and a read that keeps failing parks for a decision.
 - Each green poll costs one more provider read for the comments.
 
-Forges that cannot supply review comments are unaffected by either value.
+Forges that cannot supply review comments are unaffected by either value. Because only GitHub can attribute a *check* to a review bot, `on_failure` reads nothing on GitLab: a GitLab run needs `always` for the bot's unresolved discussions to become findings.
 
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot silence a green bot's comments on itself, and cannot opt itself in either.
 A value set here wins over the operator's own [`ci.review_bot_comments`](/no-mistakes/reference/global-config/#cireview_bot_comments).
