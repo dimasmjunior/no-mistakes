@@ -423,12 +423,19 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		}
 		renderState := testingArtifactRenderState{remainingEmbeddedBytes: maxEmbeddedArtifactsTotalBytes}
 		previousArtifact := ""
+		previousAttachment := false
 		for _, artifact := range artifacts {
 			rendered := renderTestingArtifact(artifact, opts, &renderState)
 			if rendered == "" {
 				continue
 			}
+			// A compact block with an uploaded attachment always starts with
+			// it. GitHub plays a bare video URL inline only when the URL is a
+			// paragraph by itself, so the block gets a blank line on both sides.
+			attachment := opts.compactArtifacts && opts.attachmentURL(artifact) != ""
 			if needsArtifactBlockSeparator(previousArtifact, rendered) {
+				b.WriteString("\n")
+			} else if (attachment || previousAttachment) && !strings.HasSuffix(b.String(), "\n\n") {
 				b.WriteString("\n")
 			}
 			b.WriteString(rendered)
@@ -436,10 +443,11 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 				b.WriteString("\n")
 			}
 			previousArtifact = rendered
+			previousAttachment = attachment
 		}
 		if outcome := buildTestingOutcomeLine(line, stepRounds); shouldRenderTestingOutcome(opts, wroteSummary, outcome) {
 			outcomeLine := "- " + outcome
-			if needsArtifactBlockSeparator(previousArtifact, outcomeLine) {
+			if needsArtifactBlockSeparator(previousArtifact, outcomeLine) || previousAttachment {
 				b.WriteString("\n")
 			}
 			b.WriteString(outcomeLine)
