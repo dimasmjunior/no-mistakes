@@ -861,6 +861,7 @@ type ProvidersRaw struct {
 	GitLab      GitLabProviderRaw      `yaml:"gitlab"`
 	Bitbucket   BitbucketProviderRaw   `yaml:"bitbucket"`
 	AzureDevOps AzureDevOpsProviderRaw `yaml:"azuredevops"`
+	Origin      OriginProviderRaw      `yaml:"origin"`
 }
 
 // GitHubProviderRaw is the YAML representation of GitHub provider settings.
@@ -887,12 +888,19 @@ type AzureDevOpsProviderRaw struct {
 	DraftPullRequests *bool `yaml:"draft_pull_requests"`
 }
 
+// OriginProviderRaw is the YAML representation of Cursor Origin provider
+// settings. Pointer fields distinguish "not set" (nil) from an explicit false.
+type OriginProviderRaw struct {
+	DraftPullRequests *bool `yaml:"draft_pull_requests"`
+}
+
 // Providers holds resolved provider-specific settings.
 type Providers struct {
 	GitHub      GitHubProvider
 	GitLab      GitLabProvider
 	Bitbucket   BitbucketProvider
 	AzureDevOps AzureDevOpsProvider
+	Origin      OriginProvider
 }
 
 // GitHubProvider holds resolved GitHub provider settings.
@@ -920,6 +928,14 @@ type BitbucketProvider struct {
 type AzureDevOpsProvider struct {
 	// DraftPullRequests opens created Azure DevOps PRs as drafts
 	// (az repos pr create --draft true). Default false.
+	DraftPullRequests bool
+}
+
+// OriginProvider holds resolved Cursor Origin provider settings.
+type OriginProvider struct {
+	// DraftPullRequests opens created Origin PRs as drafts
+	// (`origin pr create --status draft`). Default false, which passes
+	// `--status open` because Origin's CLI otherwise defaults to draft.
 	DraftPullRequests bool
 }
 
@@ -3404,6 +3420,9 @@ func applyProvidersOverrides(dst *Providers, src *ProvidersRaw) {
 	}
 	if src.AzureDevOps.DraftPullRequests != nil {
 		dst.AzureDevOps.DraftPullRequests = *src.AzureDevOps.DraftPullRequests
+	}
+	if src.Origin.DraftPullRequests != nil {
+		dst.Origin.DraftPullRequests = *src.Origin.DraftPullRequests
 	}
 }
 

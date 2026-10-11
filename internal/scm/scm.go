@@ -28,6 +28,7 @@ const (
 	ProviderAzureDevOps Provider = "azuredevops"
 	ProviderForgejo     Provider = "forgejo"
 	ProviderGitea       Provider = "gitea"
+	ProviderOrigin      Provider = "origin"
 	ProviderUnknown     Provider = "unknown"
 )
 
@@ -47,6 +48,7 @@ var BuiltinProviders = []Provider{
 	ProviderAzureDevOps,
 	ProviderForgejo,
 	ProviderGitea,
+	ProviderOrigin,
 	ProviderUnknown,
 }
 
@@ -89,7 +91,8 @@ func DetectProviderContext(ctx context.Context, remoteURL string) Provider {
 // DetectProviderWithForgejoBaseURL detects a provider while allowing an
 // explicit forgejo-axi base URL to identify an otherwise-unrecognizable
 // self-hosted Forgejo origin. Known hosted providers keep precedence so a
-// stray Forgejo setting cannot reroute GitHub, GitLab, Bitbucket, or Azure.
+// stray Forgejo setting cannot reroute GitHub, GitLab, Bitbucket, Azure,
+// or Cursor Origin.
 func DetectProviderWithForgejoBaseURL(remoteURL, forgejoBaseURL string) Provider {
 	return DetectProviderContextWithForgejoBaseURL(context.Background(), remoteURL, forgejoBaseURL)
 }
@@ -137,6 +140,9 @@ func detectStaticProvider(url string) Provider {
 	if strings.Contains(lower, "codeberg.org") || strings.Contains(lower, "forgejo") {
 		return ProviderForgejo
 	}
+	if detectCursorOrigin(url) {
+		return ProviderOrigin
+	}
 	return detectLegacyProviderHost(lower)
 }
 
@@ -165,6 +171,9 @@ func detectProviderWithForgejo(ctx context.Context, remoteURL string, forgejo Fo
 	}
 	if provider := detectHostedProvider(host); provider != ProviderUnknown {
 		return provider
+	}
+	if detectCursorOriginWeb(remoteURL) {
+		return ProviderOrigin
 	}
 	if glabKnowsHost(host) {
 		return ProviderGitLab
@@ -208,6 +217,8 @@ func detectHostedProvider(host string) Provider {
 		return ProviderBitbucket
 	case host == "dev.azure.com" || strings.HasSuffix(host, ".dev.azure.com") || strings.HasSuffix(host, ".visualstudio.com"):
 		return ProviderAzureDevOps
+	case isCursorOriginGitHost(host):
+		return ProviderOrigin
 	default:
 		return ProviderUnknown
 	}
@@ -228,6 +239,31 @@ func detectLegacyProviderHost(host string) Provider {
 	default:
 		return ProviderUnknown
 	}
+}
+
+// isCursorOriginGitHost reports whether host is Cursor Origin's git forge.
+// The web UI lives on cursor.com/codebase/...; that is detectCursorOriginWeb.
+func isCursorOriginGitHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return host == "origin.cursor.com" || strings.HasSuffix(host, ".origin.cursor.com")
+}
+
+// detectCursorOrigin reports whether remote is a Cursor Origin git URL or a
+// cursor.com/codebase web PR URL. Bare cursor.com pages (docs, changelog)
+// must not match.
+func detectCursorOrigin(remote string) bool {
+	if isCursorOriginGitHost(ExtractHost(remote)) {
+		return true
+	}
+	return detectCursorOriginWeb(remote)
+}
+
+func detectCursorOriginWeb(remote string) bool {
+	if ExtractHost(remote) != "cursor.com" {
+		return false
+	}
+	path := strings.ToLower(RepoPath(remote))
+	return strings.HasPrefix(path, "codebase/")
 }
 
 // ResolveHost returns the canonical host for a remote. For SSH remotes it
@@ -761,6 +797,8 @@ func (p Provider) CLIName() string {
 		return "forgejo-axi"
 	case ProviderGitea:
 		return "tea"
+	case ProviderOrigin:
+		return "origin"
 	default:
 		return ""
 	}
@@ -780,6 +818,8 @@ func (p Provider) AuthCheckCommand() []string {
 		return []string{"forgejo-axi", "status", "--json"}
 	case ProviderGitea:
 		return []string{"tea", "whoami"}
+	case ProviderOrigin:
+		return []string{"origin", "auth", "status"}
 	default:
 		return nil
 	}

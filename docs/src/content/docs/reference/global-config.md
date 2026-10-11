@@ -129,6 +129,8 @@ providers:
     draft_pull_requests: false
   azuredevops:
     draft_pull_requests: false
+  origin:
+    draft_pull_requests: false
 ```
 
 ## Fields
@@ -573,7 +575,7 @@ Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open, which matters under `ci_monitor_until_merged` - the only mode that monitors a green PR at all.
-If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
+If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, Cursor Origin, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
@@ -904,7 +906,7 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | `auto_fix.test`     | `int` | `3`     | Test failure auto-fix attempts                                                              |
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |
-| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus merge conflicts on GitHub, GitLab, Forgejo, Azure DevOps, and provider plugins declaring `mergeable_state` |
+| `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus merge conflicts on GitHub, GitLab, Forgejo, Azure DevOps, Cursor Origin, and provider plugins declaring `mergeable_state` |
 
 Legacy alias: `auto_fix.babysit`.
 
@@ -1373,6 +1375,19 @@ Open pull requests created on Azure DevOps as drafts (`az repos pr create --draf
 
 Only affects PR creation; existing PRs are not toggled between draft and ready. Azure DevOps only — ignored for other providers.
 This is a global default. Per-repo config can override it via `providers.azuredevops.draft_pull_requests`.
+
+### providers.origin.draft_pull_requests
+
+Open pull requests created on Cursor Origin as drafts (`origin pr create --status draft`).
+When false (the default), no-mistakes passes `--status open` because the Origin CLI otherwise defaults to draft.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+Only affects PR creation; existing PRs are not toggled between draft and ready. Cursor Origin only — ignored for other providers.
+This is a global default. Per-repo config can override it via `providers.origin.draft_pull_requests`.
 
 ## Environment variables
 
