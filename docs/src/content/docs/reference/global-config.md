@@ -315,11 +315,20 @@ Availability, authentication, and model-specific reasoning support remain Pi's
 responsibility; no-mistakes does not inspect subscriptions or query quotas.
 
 A pin applies to **every pipeline duty**, including reviewer and fixer roles.
-The effective trusted agent selection must be Pi-only (no `auto`, non-Pi
-fallbacks, or non-Pi `review_agents`), including `agent` / fallbacks from the
-trusted default-branch `.no-mistakes.yaml`. That check runs before any active
-validation is cancelled. Pi role-specific model/effort values are
-superseded by the run pin. Native `--model`, `--provider`, `--models`,
+The effective agent selection must be Pi-only (no `auto`, non-Pi fallbacks, or
+non-Pi `review_agents`). Under the default trust policy, a nonempty `agent` in
+the freshly fetched, trusted default-branch `.no-mistakes.yaml` replaces the
+global scalar or fallback list for this check, just as it does for an ordinary
+run. This lets one project opt into Pi profiles with trusted `agent: pi` while
+other projects keep a global `agent: auto` or another global selection. When the
+trusted project config does not select an agent, the global selection must itself
+be Pi-only. If the trusted default branch enables `allow_repo_commands: true`,
+the submitted branch instead becomes the source of any repository `agent`
+override. Without that opt-in, an `agent: pi` that exists only on the submitted
+feature branch cannot authorize the profile. Unreadable or malformed
+submitted/trusted config refuses the profile. These checks run before any active
+validation is cancelled. Pi role-specific model/effort values are superseded by
+the run pin. Native `--model`, `--provider`, `--models`,
 `--thinking` (including `--flag=value`), or `--` in
 `agent_args_override.pi` conflict at launch: move defaults to `agent_config.pi`
 rather than combining two selection mechanisms.
@@ -1263,6 +1272,7 @@ The test step always collects evidence outside the worktree, so artifacts never 
 On GitHub.com and GitHub Enterprise Cloud, image and video artifacts that pass GitHub's attach rules (png, jpg, jpeg, gif, webp, svg, mp4, mov, webm; images at most 10 MiB and videos at most 100 MiB) are uploaded to GitHub user-attachments when the PR body is rendered, unless `attach_media` is false and `store_in_repo` is also false.
 The testing section embeds the returned image markdown or bare video URL so remote reviewers can open the media. Upload is fail-closed: any error, unsupported type, oversize file, GitHub Enterprise Server, non-GitHub forge, or GitHub App/Actions token keeps today's rendering (a commit-pinned evidence-branch link if `store_in_repo` published, otherwise a local path) rather than a dead attachment URL. Text artifacts stay inlined as they are today.
 When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
+Published text files get the same home-directory redaction as the PR title and body, so a path under the operator's home is committed with that part rewritten to `~`. Binary and visual artifacts are published as written, and the local evidence files are never changed.
 When both `attach_media` and `store_in_repo` apply, the testing section carries the user-attachments embed in addition to the commit-pinned git link.
 The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
