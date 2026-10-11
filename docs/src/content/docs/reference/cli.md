@@ -225,6 +225,7 @@ By default that outcome is the run's own verdict: the run completes as `checks_p
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line, and start a fresh `axi run` on the updated head if the PR later needs an update - this run will not rebase or re-push it.
 Under [`ci_monitor_until_merged`](/no-mistakes/reference/global-config/#ci_monitor_until_merged) the run instead stays active and keeps monitoring the same PR.
 While that monitor is running, do not run `axi run`, `rerun`, or a manual rebase: the monitor auto-rebases onto the base, resolves actual conflicts, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push, while a PR that is merely behind but clean needs no command.
+On GitHub, a clean PR whose base requires up-to-date branches (`mergeStateStatus: BEHIND`) still reports `checks-passed` and waits for a human to bring it up to date, unless the repository opts into [`ci.rebase_behind`](/no-mistakes/reference/repo-config/#cirebase_behind), in which case it is rebased the same way.
 After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the restart conditions.
 Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
 `passed-with-override` qualifies either `passed` or `checks-passed` when the run has an explicitly approved Test exception or a CI approval over still-failing checks.

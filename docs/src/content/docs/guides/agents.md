@@ -157,7 +157,8 @@ When the pipeline applied fixes, successful outcomes include a `fixes` table lis
 
 Under [`ci_monitor_until_merged`](/no-mistakes/reference/global-config/#ci_monitor_until_merged) the run stays active instead and keeps monitoring the PR after checks pass, and then the agent runs no command and must never hand-rebase.
 When that monitor sees an actual conflict it rebases onto the base, resolves it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push, so no agent or user action is needed.
-A PR that is merely behind but still clean needs nothing either, since the platform merges it.
+On GitHub, a clean PR whose base requires branches to be up to date (`mergeStateStatus: BEHIND`) still reports `checks-passed` and waits for a human to bring it up to date; only when the repository opts into [`ci.rebase_behind`](/no-mistakes/reference/repo-config/#cirebase_behind) does the monitor give it the same rebase, once its checks are green and the base has held still for one poll.
+A PR that is merely behind a base without that rule needs nothing, since the platform merges it.
 The one exception is when that monitor is no longer running - the PR was closed, the run was aborted or superseded, it idle-timed-out, or its auto-fix attempts were exhausted - in which case see [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the restart conditions.
 The agent must not use `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
 

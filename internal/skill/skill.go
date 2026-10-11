@@ -319,8 +319,12 @@ branch or hits a merge conflict after checks pass - commonly because another PR
 merged first - needs **no command from you**: never hand-rebase. When the CI monitor
 sees an actual conflict it **rebases onto the base, resolves it, revalidates from Review
 because rebasing cannot prove continuity with the reviewed head, and re-pushes
-the branch through Push**; a PR that is merely behind but still clean needs nothing
-either, since the platform merges it. The one exception is when that monitor is
+the branch through Push**. On GitHub, a clean PR whose base requires branches
+to be up to date (` + "`mergeStateStatus: BEHIND`" + `) still reports ` + "`checks-passed`" + ` and
+waits for a human to bring it up to date; only when the repository opts
+into ` + "`ci.rebase_behind`" + ` does the monitor give it the same rebase, once its
+checks are green and the base has held still for one poll. A PR that is merely behind a base without that rule needs nothing, since
+the platform merges it. The one exception is when that monitor is
 no longer running - the PR was closed, the run was aborted or superseded, it
 idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
 with ` + "`no-mistakes rerun`" + `, subject to the clean-head check above. An accepted

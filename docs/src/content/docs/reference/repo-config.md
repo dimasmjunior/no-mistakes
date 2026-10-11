@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` and `gates[].command` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor` and `devin`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.conversation`, `review.path_instructions`, `gates`, `auto_fix.gates`, `protected_paths`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `ci.revalidate_repairs`, `ci.review_bot_comments`, `ci.rebase_behind`, `rebase.strategy`, `test.prepare`, `test.base_attribution`, `test.instructions`, `test.allow_approve_over_failure`, `test.evidence.branch`, `pr.template`, `pr.publish_intent`, and `pr.appendix` only from that trusted copy.
 `pr.base_branch` is trusted-default-branch-only as well, but unlike those fields it follows the same `allow_repo_commands: true` opt-in exception as `commands`/`agent` (see [`pr.base_branch`](#prbase_branch) below).
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
@@ -86,6 +86,7 @@ ci:
   rerun_transient: 0
   revalidate_repairs: false
   review_bot_comments: on_failure # or: always
+  rebase_behind: false
 
 # How a base branch that moved under your branch is integrated.
 # Read only from the trusted default branch.
@@ -837,6 +838,34 @@ Forges that cannot supply review comments are unaffected by either value. Becaus
 
 This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot silence a green bot's comments on itself, and cannot opt itself in either.
 A value set here wins over the operator's own [`ci.review_bot_comments`](/no-mistakes/reference/global-config/#cireview_bot_comments).
+
+### ci.rebase_behind
+
+Whether the CI monitor rebases a green GitHub PR that GitHub reports `mergeStateStatus: BEHIND`.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+| Trust | Read only from the trusted default branch |
+
+```yaml
+ci:
+  rebase_behind: true
+```
+
+GitHub reports `BEHIND` only when the base branch requires branches to be up to date before merging, so the merge button stays disabled even though every check is green and nothing conflicts.
+A PR that is behind a base without that rule reads `CLEAN`, merges as it is, and is unaffected by this key.
+
+- **`false` (default)** keeps the monitor's behavior from before the key existed: the PR reports `checks-passed` and waits for a human to bring it up to date.
+- **`true`** withholds `checks-passed` from such a PR. Once a second poll still sees it green and `BEHIND` at the same base tip, it takes the merge-conflict repair: rebase onto the PR base, revalidate from Review, and re-push through Push. A base that moves between those polls keeps the monitor waiting instead.
+
+Off by default because every rebase rewrites the head, so it always revalidates from Review (see [`ci.revalidate_repairs`](#cirevalidate_repairs)) and costs another full Review, Test, Document, and Lint pass each time the base advances.
+Each one also spends an [`auto_fix.ci`](#auto_fix) attempt.
+Other providers never report `BEHIND`, so the key only has an effect on GitHub.
+
+This value is read only from the trusted default-branch copy of this file, like the rest of the `ci` block: a pushed branch cannot opt itself into the extra passes, or out of them.
+A value set here wins over the operator's own [`ci.rebase_behind`](/no-mistakes/reference/global-config/#cirebase_behind) in both directions.
 
 ### rebase.strategy
 

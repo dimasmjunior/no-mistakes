@@ -692,6 +692,8 @@ type CIRaw struct {
 	RevalidateRepairs *bool `yaml:"revalidate_repairs"`
 	// ReviewBotComments is "" when unset; see CI.ReviewBotComments.
 	ReviewBotComments string `yaml:"review_bot_comments"`
+	// RebaseBehind is a pointer for the same reason as RevalidateRepairs.
+	RebaseBehind *bool `yaml:"rebase_behind"`
 }
 
 // CI holds the resolved CI-step settings.
@@ -743,6 +745,13 @@ type CI struct {
 	// while leaving an unresolved comment, most often on the pipeline's own
 	// CI repair commit, which no human has reviewed yet.
 	ReviewBotComments string
+	// RebaseBehind opts the CI monitor into rebasing a green GitHub PR that
+	// reports mergeStateStatus BEHIND (its base requires branches to be up to
+	// date) through the merge-conflict repair, which revalidates from Review.
+	// Off by default: each base advance would then cost another full pass, so
+	// a green BEHIND PR reports checks-passed and waits for a human to bring
+	// it up to date (see VISION.md's cost rule).
+	RebaseBehind bool
 }
 
 // RebaseRaw is the YAML representation of rebase-step settings.
@@ -1556,6 +1565,14 @@ ci:
   # instead of reporting checks-passed. A repository that sets
   # ci.review_bot_comments on its own default branch overrides this value.
   review_bot_comments: on_failure
+  # Whether the CI monitor rebases a green GitHub PR that GitHub reports BEHIND
+  # because its base requires branches to be up to date. Defaults to false: the
+  # PR reports checks-passed and waits for a human to bring it up to date. Set
+  # true to have the monitor rebase it once the base holds still for one poll;
+  # each such rebase revalidates from Review, so it costs another full pipeline
+  # pass. A repository that sets ci.rebase_behind on its own default branch
+  # overrides this value.
+  rebase_behind: false
 
 # Auto-fix commit subject template. Available variables: {{.Step}}, {{.Summary}}, and {{.Branch}}.
 # {{.Branch}} is the normalized branch name, or the only capture group from
@@ -3497,6 +3514,9 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	}
 	if v := strings.TrimSpace(src.ReviewBotComments); v != "" {
 		dst.ReviewBotComments = v
+	}
+	if src.RebaseBehind != nil {
+		dst.RebaseBehind = *src.RebaseBehind
 	}
 }
 
