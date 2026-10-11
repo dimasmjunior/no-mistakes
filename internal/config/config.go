@@ -1408,17 +1408,11 @@ forgejo_axi_path: forgejo-axi
 #   cursor: cursor-agent acp
 #   devin: devin acp
 
-# Maximum time the CI monitor babysits an open PR with no base-branch movement
-# before giving up. The monitor watches CI and rebases the PR onto its base when
-# it has a merge conflict (or, with ci.rebase_behind, when GitHub reports it
-# green but BEHIND); each base advance re-arms this timer, so an
-# actively-updated green PR keeps its monitor. Set to "unlimited", "none", "off", "never", or any
-# non-positive duration to monitor until the PR is merged, closed, or the run is
-# aborted with: no-mistakes axi abort --run <id>
-#
-# This bounds only the wait that ci_monitor_until_merged (below) asks for, and
-# the wait for checks that have not finished yet. It no longer bounds a wait for
-# a human merge decision, because the default is not to wait for one.
+# Idle timeout for CI readiness and, when ci_monitor_until_merged is true,
+# the subsequent merge watch. Each base-branch advance re-arms this timer.
+# Set to "unlimited", "none", "off", "never", or any non-positive duration
+# to disable the timeout. Readiness still ends the run by default.
+# See docs/src/content/docs/reference/global-config.md#ci_timeout.
 ci_timeout: "168h"
 
 # Whether the CI step keeps monitoring the pull request after every check is
