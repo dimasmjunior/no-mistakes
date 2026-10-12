@@ -718,23 +718,70 @@ func ghConfigPath() string {
 	return filepath.Join(home, ".config", "gh", "hosts.yml")
 }
 
-// teaKnowsHost reports whether host appears as a login's url (or ssh_host) in
-// tea's own config.yml. Any read/parse error is treated as "not configured" so
-// detection fails closed to ProviderUnknown.
+// teaKnowsHost reports whether host appears in either tea generation's config:
+// as a login's url (or ssh_host) in tea 0.x's config.yml, or as an instance
+// (or its ssh_host) in tea 1.0's hosts.yml. Any read/parse error is treated as
+// "not configured" so detection fails closed to ProviderUnknown.
 func teaKnowsHost(host string) bool {
-	_, ok := teaLoginForHost(host)
-	return ok
+	account := ResolveTeaAccount(host)
+	return account.Login != "" || account.Instance != ""
 }
 
-// ResolveGiteaLogin returns the name of the tea login configured for host, or
-// "" when tea has no login matching it. The gitea Host implementation needs
-// the login name itself (not just a yes/no match): unlike gh/glab, tea infers
-// "which instance" from the working directory's git remote, which the
-// daemon's detached bare-gate repo does not have, so every tea invocation
-// must carry --login <name> explicitly.
-func ResolveGiteaLogin(host string) string {
-	name, _ := teaLoginForHost(host)
-	return name
+// TeaAccount names the tea account configured for a host, in each tea
+// generation's own terms. Unlike gh/glab, tea infers "which instance" from the
+// working directory's git remote, which the daemon's detached bare-gate repo
+// does not have, so every tea invocation must select the account explicitly.
+// tea 0.x keeps named logins in config.yml and selects one with --login
+// <name>; tea 1.0 (gitea/tea#1126) keeps instances in hosts.yml keyed by
+// their normalized URL and selects one with --host <url>. Which field applies
+// depends on the installed binary, which only the gitea Host probes, so both
+// are resolved here.
+type TeaAccount struct {
+	Login    string // tea 0.x: logins[].name in config.yml
+	Instance string // tea 1.0: a hosts.yml key, e.g. https://gitea.example.com
+}
+
+// ResolveTeaAccount returns the tea account configured for host; a field is
+// "" when that generation's config has no match.
+func ResolveTeaAccount(host string) TeaAccount {
+	login, _ := teaLoginForHost(host)
+	return TeaAccount{Login: login, Instance: teaInstanceForHost(host)}
+}
+
+// teaInstanceForHost returns the tea 1.0 hosts.yml instance whose URL host or
+// ssh_host is host. Two instances on one hostname (different ports or base
+// paths) are ambiguous and resolve to "", failing closed rather than letting
+// map order pick one.
+func teaInstanceForHost(host string) string {
+	path := teaHostsPath()
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Hosts map[string]struct {
+			SSHHost string `yaml:"ssh_host"`
+		} `yaml:"hosts"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	host = strings.ToLower(host)
+	match := ""
+	for instance, entry := range cfg.Hosts {
+		sshHost := strings.ToLower(strings.TrimSpace(stripPort(entry.SSHHost)))
+		if ExtractHost(instance) != host && (sshHost == "" || sshHost != host) {
+			continue
+		}
+		if match != "" {
+			return ""
+		}
+		match = instance
+	}
+	return match
 }
 
 func teaLoginForHost(host string) (string, bool) {
@@ -768,19 +815,40 @@ func teaLoginForHost(host string) (string, bool) {
 	return "", false
 }
 
-// teaConfigPath resolves tea's config file location. tea has no CLI-specific
+// teaConfigPath resolves tea 0.x's config.yml. tea 0.x has no CLI-specific
 // override env var (unlike glab's GLAB_CONFIG_DIR or gh's GH_CONFIG_DIR); it
 // persists to $XDG_CONFIG_HOME/tea, falling back to ~/.config/tea. It returns
 // "" when no home/config directory can be determined.
 func teaConfigPath() string {
+	dir := teaDefaultConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "config.yml")
+}
+
+// teaHostsPath resolves tea 1.0's hosts.yml, which honors TEA_CONFIG_DIR
+// before the same default directory tea 0.x uses.
+func teaHostsPath() string {
+	dir := os.Getenv("TEA_CONFIG_DIR")
+	if dir == "" {
+		dir = teaDefaultConfigDir()
+	}
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "hosts.yml")
+}
+
+func teaDefaultConfigDir() string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "tea", "config.yml")
+		return filepath.Join(dir, "tea")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "tea", "config.yml")
+	return filepath.Join(home, ".config", "tea")
 }
 
 func (p Provider) CLIName() string {
@@ -817,7 +885,9 @@ func (p Provider) AuthCheckCommand() []string {
 	case ProviderForgejo:
 		return []string{"forgejo-axi", "status", "--json"}
 	case ProviderGitea:
-		return []string{"tea", "whoami"}
+		// `tea whoami` is gone in tea 1.0; an authenticated GET /user works
+		// in both generations.
+		return []string{"tea", "api", "/user"}
 	case ProviderOrigin:
 		return []string{"origin", "auth", "status"}
 	default:

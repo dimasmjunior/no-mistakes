@@ -239,11 +239,11 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		if repoSlug == "" {
 			return nil, "could not resolve Gitea owner/repo from the remote URL"
 		}
-		// login comes from tea's own config.yml (see scm.ResolveGiteaLogin); an
-		// empty login is tolerated here and surfaces as an actionable error
+		// The account comes from tea's own config (see scm.ResolveTeaAccount);
+		// a missing one is tolerated here and surfaces as an actionable error
 		// from Host.Available instead of failing host construction outright.
-		login := scm.ResolveGiteaLogin(host)
-		return gitea.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, login, repoSlug), ""
+		account := scm.ResolveTeaAccount(host)
+		return gitea.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, account, repoSlug), ""
 	case scm.ProviderOrigin:
 		if sctx.Repo.ForkURL != "" {
 			return nil, "fork PR routing for Cursor Origin is not implemented"

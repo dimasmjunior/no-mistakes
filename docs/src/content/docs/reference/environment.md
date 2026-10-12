@@ -64,7 +64,7 @@ Give a bare ASCII hostname or IP address, with an optional port that is ignored,
 
 The variable only widens which SSH origins belong to the instance `FORGEJO_BASE_URL` already names, so it does nothing while that variable is unset or invalid. The upstream path prefix must still match, and HTTPS origins are unaffected. GitHub, GitLab, Bitbucket, and Azure DevOps hosts, plus any host configured in `glab`, `gh`, or `tea`, are all matched before the declared domain; against the remaining hostname guesses, the declared domain carries exactly the weight a `FORGEJO_BASE_URL` match already carries.
 
-If you worked around a split host by adding a `tea` login for it, delete that login when you set this variable. Because tea's configured hosts are matched first, a login whose `url` host or `ssh_host` equals the origin's host keeps the repository on the Gitea provider: the PR and CI steps keep running through `tea` instead of forgejo-axi, and where `tea` is not installed or not logged in, the PR step is skipped. Find the login with `tea logins list` and remove it with `tea logins delete <name>`.
+If you worked around a split host by adding a `tea` login for it, delete that login when you set this variable. Because tea's configured hosts are matched first, a login whose `url` host or `ssh_host` equals the origin's host keeps the repository on the Gitea provider: the PR and CI steps keep running through `tea` instead of forgejo-axi, and where `tea` is not installed or not logged in, the PR step is skipped. Find the login with `tea logins list` and remove it with `tea logins delete <name>` (on tea 1.0: `tea auth status` and `tea auth logout --host <url>`).
 
 ## `FORGEJO_TOKEN_<HOST_KEY>`
 
@@ -230,9 +230,20 @@ Directory holding gh's `hosts.yml`, consulted when detecting self-hosted GitHub 
 
 When the upstream hostname is not `github.com`, no-mistakes reads gh's configured hosts from `$GH_CONFIG_DIR/hosts.yml` to decide whether the host is a GitHub Enterprise instance. It takes precedence over `XDG_CONFIG_HOME`. A selected [`forge_profiles`](/no-mistakes/reference/global-config/#forge_profiles) entry overrides this variable for that run and removes `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`, and `GH_REPO` from all child processes. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
 
+## `TEA_CONFIG_DIR`
+
+Directory holding tea 1.0's `hosts.yml`, consulted when detecting self-hosted Gitea.
+
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
+
+tea 1.0 ([gitea/tea#1126](https://gitea.com/gitea/tea/pulls/1126)) keeps its instances in `$TEA_CONFIG_DIR/hosts.yml`, and no-mistakes reads the same file to match the upstream host to an instance URL or `ssh_host`. It takes precedence over `XDG_CONFIG_HOME`. tea 0.x ignores it. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
+
 ## `XDG_CONFIG_HOME`
 
-Config directory used to locate glab's `config.yml` for self-hosted GitLab detection, gh's `hosts.yml` for self-hosted GitHub Enterprise detection, and tea's `config.yml` for Gitea detection.
+Config directory used to locate glab's `config.yml` for self-hosted GitLab detection, gh's `hosts.yml` for self-hosted GitHub Enterprise detection, and tea's `config.yml` (tea 0.x) and `hosts.yml` (tea 1.0) for Gitea detection.
 
 |         |             |
 | ------- | ----------- |
@@ -241,7 +252,7 @@ Config directory used to locate glab's `config.yml` for self-hosted GitLab detec
 
 When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts at `$XDG_CONFIG_HOME/glab-cli/config.yml`, falling back to `~/.config/glab-cli/config.yml` when `XDG_CONFIG_HOME` is unset.
 When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
-tea has no CLI-specific override env var (unlike `GLAB_CONFIG_DIR`/`GH_CONFIG_DIR`); no-mistakes always looks for its configured logins at `$XDG_CONFIG_HOME/tea/config.yml`, falling back to `~/.config/tea/config.yml` when `XDG_CONFIG_HOME` is unset. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
+tea 0.x has no CLI-specific override env var (unlike `GLAB_CONFIG_DIR`/`GH_CONFIG_DIR`); no-mistakes always looks for its configured logins at `$XDG_CONFIG_HOME/tea/config.yml`, falling back to `~/.config/tea/config.yml` when `XDG_CONFIG_HOME` is unset. When `TEA_CONFIG_DIR` is unset, tea 1.0's configured instances are read from `hosts.yml` in that same directory. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-gitea).
 
 ## `COMPACT_ADVISER_DISABLE`
 

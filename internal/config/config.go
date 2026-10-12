@@ -348,9 +348,11 @@ type OperatorReviewRaw struct {
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
 }
 
-// RepositoryPRRaw contains machine-local per-repository PR title settings.
+// RepositoryPRRaw contains machine-local per-repository PR defaults.
 type RepositoryPRRaw struct {
 	TitleFormat *string `yaml:"title_format"`
+	Template    string  `yaml:"template"`
+	Appendix    string  `yaml:"appendix"`
 }
 
 // RepositoryOverrides maps remote URLs to machine-local per-repository settings.
@@ -3693,8 +3695,16 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		PublishIntent: repo.PR.PublishIntent,
 		Appendix:      repo.PR.Appendix,
 	}
-	if override != nil && override.PR.TitleFormat != nil {
-		pr.TitleFormat = *override.PR.TitleFormat
+	if override != nil {
+		if override.PR.TitleFormat != nil {
+			pr.TitleFormat = *override.PR.TitleFormat
+		}
+		if pr.Template == "" {
+			pr.Template = override.PR.Template
+		}
+		if pr.Appendix == "" {
+			pr.Appendix = override.PR.Appendix
+		}
 	}
 	if repo.PR.TitleFormat != nil {
 		pr.TitleFormat = *repo.PR.TitleFormat

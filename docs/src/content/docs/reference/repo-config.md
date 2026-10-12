@@ -236,7 +236,7 @@ Use a repository Markdown template for the public narrative, followed by no-mist
 | --- | --- |
 | Type | `string` (literal repository-relative path) |
 | Default | Empty (existing generated narrative) |
-| Trust | Path and bytes from the pinned trusted default-branch commit, even under `allow_repo_commands: true`; no global setting |
+| Trust | Path from this trusted setting or a matching machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-pr-publication-defaults) entry; bytes always from the pinned trusted default-branch commit, even under `allow_repo_commands: true` |
 
 ```yaml
 pr:
@@ -304,7 +304,7 @@ Choose how much of the generated Risk, Testing, and Pipeline tail is visible aft
 | Type | `string` |
 | Values | `full`, `collapsed`, `minimal` |
 | Default | `full` (missing or empty also preserves the default) |
-| Trust | Trusted default branch only, regardless of `allow_repo_commands` |
+| Trust | This value comes from the trusted default branch regardless of `allow_repo_commands`, or from a matching machine-local [`repository_overrides`](/no-mistakes/reference/global-config/#machine-local-pr-publication-defaults) entry when the trusted value is unset |
 
 `full` is today's body: `## Risk Assessment`, `## Testing`, and `## Pipeline` follow the narrative, in that order.
 

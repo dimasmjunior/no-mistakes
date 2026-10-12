@@ -1164,6 +1164,23 @@ Precedence for these formatting fields is explicit: `.no-mistakes.yaml` wins for
 As with the global replacement, a repository `commit.branch_pattern` replaces the matching machine-local pattern and clears its replacement.
 Repositories matching no block keep existing global and built-in behavior.
 
+#### Machine-local PR publication defaults
+
+A matching entry can select a repository's existing PR template without committing `.no-mistakes.yaml`:
+
+```yaml
+repository_overrides:
+  https://github.com/acme/widget.git:
+    pr:
+      template: .github/pull_request_template.md
+      appendix: collapsed
+```
+
+`pr.template` selects a repository-relative file, never local template contents. It uses the same [path and file validation](/no-mistakes/reference/repo-config/#prtemplate) as the repository setting, and its bytes are read only from the pinned trusted default-branch tree, never from the pushed branch or worktree.
+`pr.appendix` accepts `full`, `collapsed`, or `minimal` and can be set with or without `pr.template`; it uses the same [appendix and attestation behavior](/no-mistakes/reference/repo-config/#prappendix) as the repository setting. When template mode is active, author-edited narrative is preserved on later updates.
+For each field, a non-empty trusted repository value wins over the matching machine-local value. Leaving either unset retains existing behavior; an unset appendix defaults to `full`.
+These fields are available only under `repository_overrides`, not as machine-wide PR settings. `pr.publish_intent` remains trusted-repository-only.
+
 #### Machine-local review and documentation guidance
 
 A matching entry can add review rules and documentation policy for that one repository, without committing anything to it:
