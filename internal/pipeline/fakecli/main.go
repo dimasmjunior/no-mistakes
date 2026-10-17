@@ -1029,7 +1029,8 @@ func fakePipelineStatus(checksJSON string) string {
 		return override
 	}
 	var jobs []struct {
-		Status string `json:"status"`
+		Status       string `json:"status"`
+		AllowFailure bool   `json:"allow_failure"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(checksJSON)), &jobs); err != nil || len(jobs) == 0 {
 		return "success"
@@ -1038,6 +1039,9 @@ func fakePipelineStatus(checksJSON string) string {
 	for _, job := range jobs {
 		switch strings.ToLower(strings.TrimSpace(job.Status)) {
 		case "failed":
+			if job.AllowFailure {
+				continue
+			}
 			return "failed"
 		case "canceled", "cancelled":
 			status = "canceled"

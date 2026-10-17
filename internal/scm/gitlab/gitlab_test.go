@@ -2181,3 +2181,53 @@ func TestFindFailedJobTargetIDsIgnoresAllowedFailure(t *testing.T) {
 		t.Fatalf("findFailedJobTargetIDs() = %v, want [2]", got)
 	}
 }
+
+func TestGetChecksIgnoresStderrNoticesOnTriggerJobAndStatusCheckReads(t *testing.T) {
+	t.Parallel()
+
+	responses := checksFixture(
+		`{"id":77,"status":"success"}`,
+		`[{"id":1,"name":"build","status":"success"}]`,
+		`[{"id":5,"name":"deploy-child","status":"failed"}]`,
+		`[{"id":3,"name":"Compliance","status":"failed"}]`,
+	)
+	for key, resp := range responses {
+		if strings.HasSuffix(key, "/trigger_jobs") || strings.HasSuffix(key, "/status_checks") {
+			resp.stderr = "A new version of glab has been released\n"
+			responses[key] = resp
+		}
+	}
+	host := New(gitlabTestCmdFactory(responses), nil, "", "group/project")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want a stderr notice ignored on a successful read", err)
+	}
+	if _, ok := findCheck(checks, "deploy-child"); !ok {
+		t.Fatalf("checks = %+v, want the trigger job", checks)
+	}
+	if _, ok := findCheck(checks, "Compliance"); !ok {
+		t.Fatalf("checks = %+v, want the status check", checks)
+	}
+}
+
+func TestGetChecksRefusesANullPageOnTriggerJobAndStatusCheckReads(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		trigger string
+		status  string
+	}{
+		{"trigger jobs alone", "null", "[]"},
+		{"trigger jobs after a page", `[{"id":5,"name":"d","status":"success"}]` + "\n" + "null", "[]"},
+		{"status checks alone", "[]", "null"},
+		{"status checks after a page", "[]", `[{"id":3,"name":"c","status":"success"}]` + "\n" + "null"},
+	} {
+		responses := checksFixture(`{"id":77,"status":"success"}`, `[{"id":1,"name":"build","status":"success"}]`, tc.trigger, tc.status)
+		host := New(gitlabTestCmdFactory(responses), nil, "", "group/project")
+		if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
+			t.Fatalf("%s: GetChecks() error = nil, want a null page refused as unreadable", tc.name)
+		}
+	}
+}

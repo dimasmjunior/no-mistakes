@@ -874,13 +874,24 @@ func (h *Host) readPipelineJobs(ctx context.Context, pipelineID int) ([]byte, er
 // is removed. The current name is read first, and an instance that predates it
 // answers with GitLab's route-not-found response, so the deprecated name is
 // retried once for that instance rather than failing a read it can still serve.
+// glabStdout runs glab and returns stdout alone for the JSON decoder, plus
+// stdout and stderr together for failure classification and messages: glab
+// prints notices on stderr, which must not reach a successful read's decoder.
+func (h *Host) glabStdout(ctx context.Context, args []string) (stdout, combined []byte, err error) {
+	cmd := h.cmd(ctx, "glab", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err = cmd.Output()
+	return stdout, append(append([]byte{}, stdout...), stderr.Bytes()...), err
+}
+
 func (h *Host) pipelineTriggerJobs(ctx context.Context, pipelineID int) ([]gitlabTriggerJob, error) {
-	out, err := h.cmd(ctx, "glab", h.pipelineRouteArgs(pipelineID, "trigger_jobs")...).CombinedOutput()
-	if err != nil && gitlabRouteUnavailable(out) {
-		out, err = h.cmd(ctx, "glab", h.pipelineRouteArgs(pipelineID, "bridges")...).CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, h.pipelineRouteArgs(pipelineID, "trigger_jobs"))
+	if err != nil && gitlabRouteUnavailable(combined) {
+		out, combined, err = h.glabStdout(ctx, h.pipelineRouteArgs(pipelineID, "bridges"))
 	}
 	if err != nil {
-		return nil, fmt.Errorf("glab pipeline trigger jobs: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("glab pipeline trigger jobs: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	triggerJobs, decodeErr := decodeGitlabTriggerJobs(out)
 	if decodeErr != nil {
@@ -901,12 +912,12 @@ func (h *Host) pipelineTriggerJobs(ctx context.Context, pipelineID int) ([]gitla
 // have the feature refusing this token, and reading it as "no checks" would
 // hide one.
 func (h *Host) mergeRequestStatusChecks(ctx context.Context, mrIID string) ([]scm.Check, error) {
-	out, err := h.cmd(ctx, "glab", h.mergeRequestStatusChecksArgs(mrIID)...).CombinedOutput()
+	out, combined, err := h.glabStdout(ctx, h.mergeRequestStatusChecksArgs(mrIID))
 	if err != nil {
-		if gitlabExternalStatusChecksUnavailable(out) {
+		if gitlabExternalStatusChecksUnavailable(combined) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("glab merge request status checks: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("glab merge request status checks: %s: %w", strings.TrimSpace(string(combined)), err)
 	}
 	checks, decodeErr := decodeGitlabExternalStatusChecks(out)
 	if decodeErr != nil {
@@ -1228,6 +1239,9 @@ func decodeGitlabTriggerJobs(out []byte) ([]gitlabTriggerJob, error) {
 	var jobs []gitlabTriggerJob
 	err := decodeGitlabPages("trigger jobs", out, func(raw json.RawMessage) error {
 		var page []gitlabTriggerJob
+		if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+			return fmt.Errorf("decode gitlab trigger jobs: page is not an array")
+		}
 		if err := json.Unmarshal(raw, &page); err != nil {
 			return fmt.Errorf("decode gitlab trigger jobs: %w", err)
 		}
@@ -1252,6 +1266,9 @@ func decodeGitlabExternalStatusChecks(out []byte) ([]gitlabExternalStatusCheck, 
 	var checks []gitlabExternalStatusCheck
 	err := decodeGitlabPages("external status checks", out, func(raw json.RawMessage) error {
 		var page []gitlabExternalStatusCheck
+		if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+			return fmt.Errorf("decode gitlab external status checks: page is not an array")
+		}
 		if err := json.Unmarshal(raw, &page); err != nil {
 			return fmt.Errorf("decode gitlab external status checks: %w", err)
 		}
