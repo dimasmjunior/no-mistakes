@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"regexp"
 	"strings"
@@ -66,16 +67,37 @@ func runWithRetry(
 	var lastErr error
 	var lastLabel string
 	var lastResult *Result
+	var lastDuration time.Duration
+	budgetForRetry := func() error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return nil
+		}
+		left := time.Until(deadline)
+		if left >= lastDuration {
+			return nil
+		}
+		return fmt.Errorf("%s retry skipped: %s of the step budget remains, less than the %s the failed attempt took: %w",
+			name, left.Round(time.Millisecond), lastDuration.Round(time.Millisecond), lastErr)
+	}
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			if err := budgetForRetry(); err != nil {
+				return lastResult, err
+			}
 			emitAgentRetry(opts, name, lastLabel, attempt+1, maxRetries+1)
 			if err := transientBackoff(ctx, attempt); err != nil {
+				return lastResult, err
+			}
+			if err := budgetForRetry(); err != nil {
 				return lastResult, err
 			}
 		}
 		startedAt := time.Now()
 		result, err := runOnce()
-		emitAgentAttempt(opts, name, result, err, startedAt, time.Now())
+		completedAt := time.Now()
+		lastDuration = completedAt.Sub(startedAt)
+		emitAgentAttempt(opts, name, result, err, startedAt, completedAt)
 		if err == nil {
 			return result, nil
 		}
@@ -206,6 +228,27 @@ func classifyTransient(err error) (string, bool) {
 	if isTerminalRetryError(msg) {
 		return "", false
 	}
+	const piMissingOutputPrefix = "pi did not finish by calling no_mistakes_output alone"
+	if strings.HasPrefix(msg, piMissingOutputPrefix) {
+		stderr := strings.TrimSpace(strings.TrimPrefix(msg[len(piMissingOutputPrefix):], ":"))
+		if isPiPermanentStderr(stderr) {
+			return "", false
+		}
+		return "pi missing output tool", true
+	}
+	const piExitPrefix = "pi exited: "
+	if strings.HasPrefix(msg, piExitPrefix) {
+		if separator := strings.Index(msg[len(piExitPrefix):], ": "); separator >= 0 {
+			separator += len(piExitPrefix)
+			stderr := strings.TrimSpace(msg[separator+2:])
+			if strings.Contains(stderr, "fetch failed") {
+				if isPiPermanentStderr(stderr) {
+					return "", false
+				}
+				return "pi fetch failed", true
+			}
+		}
+	}
 	for _, sig := range transientNeedles {
 		if strings.Contains(msg, sig.needle) {
 			return sig.label, true
@@ -215,6 +258,27 @@ func classifyTransient(err error) (string, bool) {
 		return "http " + m, true
 	}
 	return "", false
+}
+
+func isPiPermanentStderr(stderr string) bool {
+	for _, sig := range terminalNeedles {
+		if strings.Contains(stderr, sig.needle) {
+			return true
+		}
+	}
+	for _, needle := range []string{
+		"permission denied",
+		"authentication",
+		"unauthorized",
+		"forbidden",
+		"401",
+		"403",
+	} {
+		if strings.Contains(stderr, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTerminalRetryError(msg string) bool {

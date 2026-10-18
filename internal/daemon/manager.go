@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -51,9 +52,11 @@ type RunManager struct {
 	dones        map[string]chan struct{}           // runID → closed when goroutine exits
 	wg           sync.WaitGroup                     // tracks background run goroutines
 	shuttingDown atomic.Bool                        // prevents new runs during shutdown
-	db           *db.DB
-	paths        *paths.Paths
-	steps        StepFactory
+
+	afterRetryProof func() // test seam: runs between HandleRetry's proof and the launch
+	db              *db.DB
+	paths           *paths.Paths
+	steps           StepFactory
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
@@ -431,6 +434,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		startedAt := time.Now()
 		defer m.wg.Done()
 		defer close(done)
+		parkedAtShutdown := false
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				errMsg := fmt.Sprintf("internal panic: %v", recovered)
@@ -443,12 +447,14 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
-			// A recovered run is a finished run too. This is the second of the
-			// two completion boundaries, and leaving it out is what let a run
-			// resumed after a daemon restart keep its empty evidence directory
-			// until some later run or restart happened to sweep it.
-			m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+			if !parkedAtShutdown {
+				m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
+				// A recovered run is a finished run too. This is the second of the
+				// two completion boundaries, and leaving it out is what let a run
+				// resumed after a daemon restart keep its empty evidence directory
+				// until some later run or restart happened to sweep it.
+				m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+			}
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
@@ -456,7 +462,11 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			m.mu.Unlock()
 		}()
 
-		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); err != nil {
+		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); errors.Is(err, pipeline.ErrParkedAtShutdown) {
+			parkedAtShutdown = true
+			slog.Info("recovered run left parked for resume after daemon restart", "run_id", plan.run.ID)
+			return
+		} else if err != nil {
 			if plan.run.Status == types.RunRunning {
 				errMsg := err.Error()
 				plan.run.Status = types.RunFailed
@@ -700,18 +710,41 @@ func (m *RunManager) closeSubscribers(runID string) {
 // own root, admitting or validating a foreign repository's push against local
 // state. The --gate value arrives absolute and symlink-resolved from git
 // rev-parse while the owned path is built from NM_HOME exactly as spelled, so
-// compare through canonicalRoot - this package's one definition of "same root",
-// which reconciles relative against absolute, symlinked against real
-// (/var -> /private/var on macOS), and case on Windows - rather than textually.
+// compare through sameGateDir - canonicalRoot's "same root" (relative against
+// absolute, symlinked against real, /var -> /private/var on macOS, case on
+// Windows) plus a filesystem identity check for spellings that differ only in
+// letter case on a case-insensitive volume - rather than textually.
 func ownedGateRepoID(p *paths.Paths, gate string) (string, error) {
 	repoID, err := repoIDFromGatePath(gate)
 	if err != nil {
 		return "", err
 	}
-	if owned := p.RepoDir(repoID); canonicalRoot(gate) != canonicalRoot(owned) {
+	if owned := p.RepoDir(repoID); !sameGateDir(gate, owned) {
 		return "", fmt.Errorf("gate %q does not belong to this daemon's home (this root owns %q)", gate, owned)
 	}
 	return repoID, nil
+}
+
+// sameGateDir reports whether two paths name the same gate directory. The
+// canonical spellings are compared first; when they differ, the two directories
+// must be the same on-disk object (os.SameFile). That follows the filesystem's
+// own case rule: a macOS home registered as /Users/Name but stored as
+// /Users/name resolves to one directory, while on a case-sensitive volume the
+// same two spellings are different directories and stay refused. A path that
+// cannot be stat'ed is never the same, so the guard stays fail-closed.
+func sameGateDir(a, b string) bool {
+	if canonicalRoot(a) == canonicalRoot(b) {
+		return true
+	}
+	infoA, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	infoB, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(infoA, infoB)
 }
 
 // repoIDFromGatePath extracts the repo ID from a gate bare repo path.
@@ -972,7 +1005,7 @@ func (m *RunManager) startFreshLaunch(ctx context.Context, repo *db.Repo, branch
 				inheritedPRURL = inheritablePRURL(runs[0])
 			}
 		}
-		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, request)
+		runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, persistedIntent, db.RunIntentSourceAgent, launchNonce, validationGeneration, requestDigest, storedPRBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, nil, request)
 		if err != nil {
 			return "", err
 		}
@@ -1255,9 +1288,9 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // caller-owned private ref on the gate. It does not rewrite origin tracking
 // refs, FETCH_HEAD, or any shared worktree ref, so a refused Pi pin cannot
 // perturb an in-flight validation that must stay running.
-func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.Repo) (string, error) {
+func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.Repo, purpose string) (string, error) {
 	if strings.TrimSpace(repo.DefaultBranch) == "" {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: repository has no known default branch to read trusted config from")
+		return "", fmt.Errorf("cannot evaluate %s: repository has no known default branch to read trusted config from", purpose)
 	}
 	privateRef := fmt.Sprintf("refs/no-mistakes/pi-profile/%d-%d", os.Getpid(), time.Now().UnixNano())
 	defer func() {
@@ -1271,11 +1304,11 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 		fetchErr = git.FetchRemoteBranchToPrivateRef(ctx, gateDir, repo.UpstreamURL, repo.DefaultBranch, privateRef)
 	}
 	if fetchErr != nil {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: failed to fetch trusted default branch %q: %w", repo.DefaultBranch, fetchErr)
+		return "", fmt.Errorf("cannot evaluate %s: failed to fetch trusted default branch %q: %w", purpose, repo.DefaultBranch, fetchErr)
 	}
 	sha, err := git.ResolveRef(ctx, gateDir, privateRef)
 	if err != nil {
-		return "", fmt.Errorf("cannot evaluate Pi run profile: failed to resolve trusted default branch %q: %w", repo.DefaultBranch, err)
+		return "", fmt.Errorf("cannot evaluate %s: failed to resolve trusted default branch %q: %w", purpose, repo.DefaultBranch, err)
 	}
 	return sha, nil
 }
@@ -1288,45 +1321,65 @@ func fetchTrustedDefaultBranchSHA(ctx context.Context, gateDir string, repo *db.
 // the first point where a trusted repository Pi override can replace a global
 // auto or non-Pi selection, so profile resolution must not reject it earlier.
 func (m *RunManager) validatePiProfileAgentsBeforeCancel(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig) error {
-	gateDir := m.paths.RepoDir(repo.ID)
-	trustedSHA, err := fetchTrustedDefaultBranchSHA(ctx, gateDir, repo)
+	cfg, _, err := m.effectiveConfigBeforeRun(ctx, repo, headSHA, globalCfg, "Pi run profile")
 	if err != nil {
 		return err
 	}
-	if err := assertTrustedConfigReadable(ctx, gateDir, repo.DefaultBranch, trustedSHA, "Pi run profile"); err != nil {
-		return err
-	}
-	trustedRepoCfg := loadTrustedRepoConfig(ctx, gateDir, trustedSHA, "")
-	pushedRepoCfg, err := loadRepoConfigAtSHA(ctx, gateDir, headSHA)
-	if err != nil {
-		return err
-	}
-	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	effective := config.EffectiveRepoConfig(pushedRepoCfg, trustedRepoCfg, allowRepoCommands)
-	return config.MergeForRemote(globalCfg, effective, repo.UpstreamURL).ValidatePiProfileAgents()
+	return cfg.ValidatePiProfileAgents()
 }
 
-func loadRepoConfigAtSHA(ctx context.Context, dir, sha string) (*config.RepoConfig, error) {
+// effectiveConfigBeforeRun resolves the configuration a run at headSHA would
+// get, from the gate and a privately fetched trusted default branch, before
+// any run is created or superseded. purpose names the caller in errors.
+func (m *RunManager) effectiveConfigBeforeRun(ctx context.Context, repo *db.Repo, headSHA string, globalCfg *config.GlobalConfig, purpose string) (*config.Config, *config.RepoConfig, error) {
+	gateDir := m.paths.RepoDir(repo.ID)
+	trustedSHA, err := fetchTrustedDefaultBranchSHA(ctx, gateDir, repo, purpose)
+	if err != nil {
+		return nil, nil, err
+	}
+	effective, err := effectiveRepoConfigAt(ctx, gateDir, repo, trustedSHA, headSHA, purpose)
+	if err != nil {
+		return nil, nil, err
+	}
+	return config.MergeForRemote(globalCfg, effective, repo.UpstreamURL), effective, nil
+}
+
+// effectiveRepoConfigAt resolves the repository configuration a run at headSHA
+// gets under the trusted default-branch commit trustedSHA.
+func effectiveRepoConfigAt(ctx context.Context, gateDir string, repo *db.Repo, trustedSHA, headSHA, purpose string) (*config.RepoConfig, error) {
+	if err := assertTrustedConfigReadable(ctx, gateDir, repo.DefaultBranch, trustedSHA, purpose); err != nil {
+		return nil, err
+	}
+	trustedRepoCfg := loadTrustedRepoConfig(ctx, gateDir, trustedSHA, "")
+	pushedRepoCfg, err := loadRepoConfigAtSHA(ctx, gateDir, headSHA, purpose)
+	if err != nil {
+		return nil, err
+	}
+	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
+	return config.EffectiveRepoConfig(pushedRepoCfg, trustedRepoCfg, allowRepoCommands), nil
+}
+
+func loadRepoConfigAtSHA(ctx context.Context, dir, sha, purpose string) (*config.RepoConfig, error) {
 	if sha == "" {
-		return nil, fmt.Errorf("cannot evaluate Pi run profile: submitted commit is missing")
+		return nil, fmt.Errorf("cannot evaluate %s: submitted commit is missing", purpose)
 	}
 	if _, err := git.Run(ctx, dir, "rev-parse", "-q", "--verify", sha+"^{commit}"); err != nil {
-		return nil, fmt.Errorf("cannot evaluate Pi run profile: submitted commit %s is not readable: %w", sha, err)
+		return nil, fmt.Errorf("cannot evaluate %s: submitted commit %s is not readable: %w", purpose, sha, err)
 	}
 	entry, err := git.Run(ctx, dir, "ls-tree", sha, "--", ".no-mistakes.yaml")
 	if err != nil {
-		return nil, fmt.Errorf("cannot evaluate Pi run profile: submitted tree at %s is not readable: %w", sha, err)
+		return nil, fmt.Errorf("cannot evaluate %s: submitted tree at %s is not readable: %w", purpose, sha, err)
 	}
 	if entry == "" {
 		return &config.RepoConfig{}, nil
 	}
 	content, err := git.ShowFile(ctx, dir, sha, ".no-mistakes.yaml")
 	if err != nil {
-		return nil, fmt.Errorf("cannot evaluate Pi run profile: submitted .no-mistakes.yaml at %s is present but not readable: %w", sha, err)
+		return nil, fmt.Errorf("cannot evaluate %s: submitted .no-mistakes.yaml at %s is present but not readable: %w", purpose, sha, err)
 	}
 	cfg, err := config.LoadRepoFromBytes([]byte(content))
 	if err != nil {
-		return nil, fmt.Errorf("cannot evaluate Pi run profile: submitted .no-mistakes.yaml at %s is present but unparseable: %w", sha, err)
+		return nil, fmt.Errorf("cannot evaluate %s: submitted .no-mistakes.yaml at %s is present but unparseable: %w", purpose, sha, err)
 	}
 	return cfg, nil
 }
@@ -1343,7 +1396,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
 	return m.withBranchLock(repo.ID, branch, func() (string, error) {
-		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, profiles...)
+		return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, "", "", "", prBaseBranch, omitIntent, inheritedPRURL, planID, closingIssues, nil, profiles...)
 	})
 }
 
@@ -1357,8 +1410,9 @@ func (m *RunManager) withBranchLock(repoID, branch string, action func() (string
 }
 
 // startRunWithIntentSourceLocked performs run creation while the caller owns
-// the repository/branch lock. Proof fields are empty for ordinary launches.
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, profiles ...*agentcfg.PiProfile) (string, error) {
+// the repository/branch lock. Proof fields are empty for ordinary launches,
+// and retry is nil for every run that does not continue a failed one.
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, launchNonce, validationGeneration, intentDigest, prBaseBranch string, omitIntent bool, inheritedPRURL, planID string, closingIssues []string, retry *retryLaunch, profiles ...*agentcfg.PiProfile) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -1480,7 +1534,6 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			return "", fmt.Errorf("persist closing issue references: %w", err)
 		}
 	}
-
 	// Legacy launches retain their existing failed-row diagnostics on a bad
 	// global config. Explicit profiles already resolved before supersession.
 	if globalCfgErr != nil {
@@ -1609,6 +1662,18 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("review_path_instructions_budget")
 		return "", err
 	}
+	if retry != nil {
+		if err := retry.proveAtLaunch(ctx, m, globalCfg, cfg, effectiveRepoCfg, run.ID); err != nil {
+			m.discardRefusedRetryRun(run.ID, cfg)
+			trackStartFailure("retry_proof")
+			return "", err
+		}
+		if err := retry.record(m.db, run); err != nil {
+			m.discardRefusedRetryRun(run.ID, cfg)
+			trackStartFailure("record_retry")
+			return "", err
+		}
+	}
 	if run.PiProfile != nil {
 		if err := cfg.ValidatePiProfileAgents(); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
@@ -1685,6 +1750,9 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
 	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
+	if retry != nil {
+		executor.SetRetrySource(retry.source.ID)
+	}
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)
 		go func() {
@@ -1710,6 +1778,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		startedAt := time.Now()
 		defer m.wg.Done()
 		defer close(done)
+		parkedAtShutdown := false
 		defer func() {
 			if r := recover(); r != nil {
 				errMsg := fmt.Sprintf("internal panic: %v", r)
@@ -1746,8 +1815,10 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
-			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
-			m.cleanupRunEvidence(cfg, run.ID)
+			if !parkedAtShutdown {
+				m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
+				m.cleanupRunEvidence(cfg, run.ID)
+			}
 			// Remove tracking.
 			m.mu.Lock()
 			delete(m.executors, run.ID)
@@ -1756,7 +1827,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 			m.mu.Unlock()
 		}()
 
-		if err := executor.Execute(runCtx, run, repo, wtDir); err != nil {
+		if err := executor.Execute(runCtx, run, repo, wtDir); errors.Is(err, pipeline.ErrParkedAtShutdown) {
+			parkedAtShutdown = true
+			slog.Info("run left parked for resume after daemon restart", "run_id", run.ID)
+			return
+		} else if err != nil {
 			fields := telemetry.Fields{
 				"action":      "finished",
 				"trigger":     trigger,
@@ -1969,7 +2044,7 @@ func telemetryFailedStepName(database *db.DB, runID string) string {
 	return ""
 }
 
-// HandleRespond routes a user approval action to the executor for the given run.
+// HandleRespond routes a gate response to the executor for the given run.
 func (m *RunManager) HandleRespond(runID string, step types.StepName, action types.ApprovalAction, findingIDs []string) error {
 	_, err := m.HandleRespondWithOverrides(runID, step, action, findingIDs, nil, nil, nil, "")
 	return err
@@ -1978,7 +2053,7 @@ func (m *RunManager) HandleRespond(runID string, step types.StepName, action typ
 // HandleRespondWithOverrides is like HandleRespond but also forwards explicit
 // declines, user instructions, and user-authored findings to the executor, and
 // returns the dispositions the response recorded.
-func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string) (pipeline.RespondDispositions, error) {
+func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepName, action types.ApprovalAction, findingIDs, ignoreFindingIDs []string, instructions map[string]string, addedFindings []types.Finding, approvalReason string, options ...pipeline.ResponseOptions) (pipeline.RespondDispositions, error) {
 	m.mu.Lock()
 	exec, ok := m.executors[runID]
 	m.mu.Unlock()
@@ -1987,7 +2062,7 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 		return pipeline.RespondDispositions{}, fmt.Errorf("no active executor for run %s", runID)
 	}
 
-	return exec.RespondWithOverrides(step, action, findingIDs, ignoreFindingIDs, instructions, addedFindings, approvalReason)
+	return exec.RespondWithOverrides(step, action, findingIDs, ignoreFindingIDs, instructions, addedFindings, approvalReason, options...)
 }
 
 // HandleAnswerReviewQuestion records one operator answer to a question the
@@ -2158,7 +2233,7 @@ func (m *RunManager) Shutdown() {
 	m.mu.Unlock()
 
 	for id, cancel := range cancels {
-		cancel(fmt.Errorf("daemon shutting down"))
+		cancel(pipeline.ErrDaemonShutdown)
 		slog.Info("cancelled run on shutdown", "run_id", id)
 	}
 

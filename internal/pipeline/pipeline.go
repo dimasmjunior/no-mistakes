@@ -13,6 +13,15 @@ import (
 
 var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
+// ErrDaemonShutdown is the cancellation cause RunManager.Shutdown gives every
+// active run.
+var ErrDaemonShutdown = errors.New("daemon shutting down")
+
+// ErrParkedAtShutdown is returned when a daemon shutdown reached a run that was
+// fully recorded as waiting at an approval gate. The run keeps that record so
+// the next start resumes it, as it would after a crash.
+var ErrParkedAtShutdown = errors.New("run left parked at an approval gate by daemon shutdown")
+
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
 	Ctx              context.Context
@@ -52,6 +61,9 @@ type StepContext struct {
 	// combination is reachable - not to forbid it.
 	FinalizingAnswers     bool
 	ReviewStartingHeadSHA string
+	// CoverageContinuation names the exact stored round accepted at the gate.
+	// The real review consumer re-reads and validates its scope before reuse.
+	CoverageContinuation *db.StepRound
 	// CarriedFindings is the outstanding set an ANSWER round carries in, minus
 	// the reviewer's own open-question rows (see answerRoundCarriedFindings),
 	// so the finalize turn re-adjudicates by id only findings it made itself.

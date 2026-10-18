@@ -204,7 +204,15 @@ Run the pipeline and decide on its findings as they come up:
 
    # skip this step
    no-mistakes axi respond --action skip
+
+   # continue static review when coverage is incomplete and findings are empty
+   no-mistakes axi respond --step review --action complete-coverage
    ` + "```" + `
+   ` + "`complete-coverage`" + ` runs a fresh reviewer over only the missing paths.
+   It reuses stored coverage only for the same run, step, round, head, base, and trusted scope.
+   Missing or invalid provenance keeps Review gated. Source changes during the turn also keep it gated.
+   It never approves incomplete coverage, runs a code fixer, or answers a question.
+   It refuses outstanding findings, finding overrides, and ` + "`--yes`" + `.
    With ` + "`--action fix`" + `, declines are explicit: every finding the gate shows
    must be listed in ` + "`--findings`" + ` or ` + "`--ignore`" + `, and a response that
    leaves one out is refused with the missing ids named while the gate stays
@@ -285,6 +293,21 @@ On refusal, inspect ` + "`no-mistakes axi status`" + ` and follow the custody gu
 below. Dirty callers and callers without clean-head evidence retain existing
 selection behavior.
 
+When a ` + "`failed`" + ` outcome came from the agent invocation itself - a provider
+processing error, a usage or quota limit, a transport failure, or the agent
+process exiting - in Test or an earlier step, and the run never pushed,
+` + "`no-mistakes axi retry --run <id>`" + ` continues that run instead of repeating it:
+a new run starts at the preserved head, carries the steps before the failed
+one, and restarts the failed step from the beginning, so a failed Review
+reviews the resulting head in full before Test. First adopt the preserved head
+with the reported ` + "`no-mistakes axi sync --recover`" + ` so your clean ` + "`HEAD`" + ` is
+exactly that head. Retry refuses, changing nothing, and names the failed proof
+whenever continuing is not provably safe - a failure about the change itself,
+a moved or dirty branch, another run, or changed configuration (repository
+settings, the agent, or its model since the carried Review ran); then use
+` + "`rerun`" + ` or address the failure. Like ` + "`respond`" + `, it blocks until the next
+` + "`gate:`" + ` or outcome.
+
 Before any post-pipeline local commit or fresh run, read the structured ` + "`branch_sync`" + ` object returned by AXI home, status, or a drive result.
 Only when its ` + "`next_action.code`" + ` is ` + "`sync`" + `, run ` + "`no-mistakes axi sync`" + ` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked and names ` + "`git checkout --detach <pushed-sha>`" + `, which moves no branch ref.
@@ -292,6 +315,7 @@ If it reports ` + "`next_action.code`" + ` is ` + "`continue_active_run`" + `, t
 When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, run its exact ` + "`next_action.command`" + ` rather than reconstructing one. That is ` + "`no-mistakes axi sync --recover`" + ` to take a still-available preserved pipeline head, or ` + "`no-mistakes axi sync --recover --keep-local`" + ` in two keep-local cases: when an accessible gate confirms the verified preserved head is missing and you are explicitly discarding those unpublished commits, or when a bound archive proves divergent later work remains preserved while recovery keeps the branch at the exact reported required head and never selects, merges, or replays the archive. Do not substitute plain ` + "`--recover`" + ` or ` + "`rerun`" + ` for a reported keep-local action. ` + "`no-mistakes rerun`" + ` can resume validating a still-available ordinary preserved head instead, subject to the clean-head check above.
 Ordinary recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under ` + "`refs/no-mistakes/recover-local/<run>`" + `.
 The ordinary containment proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
+When a run failed in a step after Test without touching the code (a Document or Lint fetch error) and its recorded head was never verified, recovery still returns custody at that head once your clean checkout sits exactly on it and the gate proves the head is the reviewed result plus the pipeline's own later commits on top of the live gate branch; recovery never moves a behind worktree onto an unverified head, so check that exact head out first.
 When ` + "`next_action.code`" + ` is ` + "`recover_remote_rewritten`" + `, the configured push target was force-rewritten outside the pipeline after a terminal run: run exact ` + "`no-mistakes axi sync --recover`" + `. It re-verifies the live target, anchors the superseded pipeline head under ` + "`refs/no-mistakes/recover-rewritten/<run>/<generation>`" + `, and rebinds only the recorded push binding to the verified live head; it never moves your branch, the gate, or the remote. It refuses ` + "`--keep-local`" + `, a live head or target that changes during recovery, a head it cannot anchor, and a merged or closed PR. Afterwards follow the ordinary ` + "`next_action`" + ` it reports.
 When ` + "`next_action.code`" + ` is ` + "`adopt_published`" + `, a custody-returned branch was rebased after its gate lane stopped moving: run ` + "`no-mistakes axi sync --adopt-published`" + `. It verifies the configured push target already has the exact rebased local head, preserves the old lane head, and updates only that stale gate lane. If the target differs or changes during verification, it refuses without replacing the lane.
 A ` + "`branch_sync.state`" + ` of ` + "`user_owned`" + ` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated ` + "`--recover`" + ` there is a harmless no-op.
@@ -311,8 +335,12 @@ hits a merge conflict after checks pass - commonly because another PR merged
 first - needs **no command from you**: never hand-rebase. When the CI monitor
 sees an actual conflict it **rebases onto the base, resolves it, revalidates from Review
 because rebasing cannot prove continuity with the reviewed head, and re-pushes
-the branch through Push**; a PR that is merely behind but still clean needs nothing
-either, since the platform merges it. The one exception is when that monitor is
+the branch through Push**. On GitHub, a clean PR whose base requires branches
+to be up to date (` + "`mergeStateStatus: BEHIND`" + `) still reports ` + "`checks-passed`" + ` and
+waits for a human to bring it up to date; only when the repository opts
+into ` + "`ci.rebase_behind`" + ` does the monitor give it the same rebase, once its
+checks are green and the base has held still for one poll. A PR that is merely behind a base without that rule needs nothing, since
+the platform merges it. The one exception is when that monitor is
 no longer running - the PR was closed, the run was aborted or superseded, it
 idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
 with ` + "`no-mistakes rerun`" + `, subject to the clean-head check above. An accepted

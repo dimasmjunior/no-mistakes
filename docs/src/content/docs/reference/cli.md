@@ -224,6 +224,7 @@ When the CI step is still monitoring an open PR and checks are green - or the tr
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
 If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
 The monitor auto-rebases onto the base, resolves actual conflicts, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and re-pushes the branch through Push; a PR that is merely behind but clean needs no command.
+On GitHub, a clean PR whose base requires up-to-date branches (`mergeStateStatus: BEHIND`) still reports `checks-passed` and waits for a human to bring it up to date, unless the repository opts into [`ci.rebase_behind`](/no-mistakes/reference/repo-config/#cirebase_behind), in which case it is rebased the same way.
 After that monitor ends, see [`no-mistakes rerun`](#no-mistakes-rerun) for the restart conditions.
 Successful outcomes (`checks-passed`, `passed`, `passed-with-override`, and `passed-with-skips`) also carry `help` instructions telling the agent to summarize the run.
 `passed-with-override` is a completed run with an explicitly approved Test exception or a CI approval over still-failing checks.
@@ -279,12 +280,13 @@ no-mistakes axi respond --action fix --findings F1,F2 --instructions "optional g
 no-mistakes axi respond --action fix --findings F1,F2 --ignore F3
 no-mistakes axi respond --action fix --add-finding '{"description":"...","action":"auto-fix"}'
 no-mistakes axi respond --action skip
+no-mistakes axi respond --step review --action complete-coverage
 no-mistakes axi respond --run <id> --action approve
 ```
 
 | Flag             | Type     | Default       | Description                                                          |
 | ---------------- | -------- | ------------- | -------------------------------------------------------------------- |
-| `--action`       | `string` | (none)        | `approve`, `fix`, or `skip`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
+| `--action`       | `string` | (none)        | `approve`, `fix`, `skip`, or `complete-coverage`; required. A reviewer's open question is answered with [`axi answer`](#no-mistakes-axi-answer), not here |
 | `--run`          | `string` | current-branch active run | Answer the gate of this run ID from any directory, without resolving the current branch or worktree |
 | `--step`         | `string` | awaiting step | Step to respond to                                                   |
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs to fix with `--action fix`               |
@@ -300,6 +302,10 @@ Declines are explicit. With `--action fix`, every finding the gate shows must ap
 Finding IDs are trimmed before validation. Missing or repeated gate finding IDs receive fresh IDs before the gate is shown, so each ID selects only one finding. An added finding with no ID, or an ID that collides with any gate finding, receives a fresh ID. Ignored findings and selections already recorded for a recovered round also reserve their IDs. See [Finding decision history](/no-mistakes/reference/pipeline-steps/#finding-decision-history) for how a fix response restores acknowledged work after recovery.
 
 Every successful fix response echoes what it recorded in a `recorded:` object: `fixed` (the findings selected, including `--add-finding` items under their normalized IDs), `ignored` (the findings explicitly declined), and `kept` (the gate findings omitted that a previous response for this step had already decided). A finding the restored decision dispatched is reported under `fixed`, not also under `kept`. Approve, skip, and abort emit no disposition echo. They are not decision-free: a nonempty gate they resolve is recorded as a decline round, which is what later rounds read as `user_chose_to_ignore`. `--yes` resolution is unchanged: it selects every current finding.
+
+`--action complete-coverage` continues a Review gate under the [coverage continuation rules](/no-mistakes/reference/pipeline-steps/#coverage-continuation).
+It refuses `--yes`, `--findings`, `--ignore`, `--instructions`, `--add-finding`, and `--reason`.
+The CLI supplies the observed head, step result, and latest round binding automatically.
 
 For an explicitly authorized Test exception, use `no-mistakes axi respond --step test --action approve --reason "the operator's explanation"`.
 The reason is optional: approval without one remains effective, and a qualifying exception is reported with no operator reason supplied.
@@ -405,6 +411,7 @@ The ordinary worktree mutation is either a strict fast-forward of the invoking c
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing during ordinary synchronization. Its `next_action.command` is `git checkout --detach <pushed-sha>`, which needs no approval, moves no branch ref, and loses no work; the local branch stays where it was.
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks. The bound-archive exception described below never changes the worktree at all.
+A terminal run whose recorded head was never verified (for example a Review fix and a Test fix followed by a Document fetch failure) is verified by recovery itself only from fresh gate state: either the live gate branch is an equal-tree rewrite of the exact reviewed result, or the recorded head extends the live gate branch as the reviewed result plus the pipeline's own later commits while the clean local checkout already sits exactly at it. Recovery never moves a worktree onto an unverified head; a behind or dirty worktree, a rebased head, a missing review authority, or a moved gate branch stays `blocked_recover_unverified_head`.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
@@ -506,6 +513,59 @@ Pipeline-created commits remain preserved in the gate and a recoverable cancella
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
 That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
 
+## no-mistakes axi retry
+
+Continue a run that failed because an agent invocation itself failed, instead of starting the whole pipeline again.
+
+```sh
+no-mistakes axi retry --run <id>
+```
+
+An agent invocation failure is an error the agent call returned while its context was still live: a provider processing error, a usage or quota limit, a transport failure, or the agent process exiting.
+The executor records that cause on the failed step when the step fails with that error.
+A timeout, a cancellation, and every failure about the change itself - a review finding, a failing test or lint, a refused policy, a human decision at a gate - record no cause and are never retried; use [`no-mistakes rerun`](#no-mistakes-rerun) or address them first.
+
+The retry starts a new run at the failed run's preserved head, so every correction the pipeline already committed is kept:
+
+- The steps before the failed step are carried from the failed run, with their outcome and, for a carried Review, the head that Review approved. Their findings and fixes appear in the new run's output and PR body as recorded in the failed run.
+- The failed step restarts from the beginning, with round trigger `retry`. A failed agent turn is never replayed, so a Review that failed during a fix round reviews the resulting head again in full before Test runs. Fixer commits the failed run never re-reviewed are flagged to that review together with the failed run's rounds, exactly as for a rerun.
+- Every later step runs normally. Per-run skips of steps that never ran are kept.
+
+The failed step must be Test or an earlier step, because Test's evidence and every later step's work are not kept after a run ends.
+The new run inherits the failed run's intent byte for byte with its provenance, PR base branch, intent omission, closing references, open PR URL, and Pi profile; retry takes none of the flags that would change them.
+
+`--run` names the failed run, as `axi status` shows it.
+It does not select a run: the retried run is always the current branch's latest run, and a `--run` that names any other run is refused.
+The retry refuses, changing nothing, unless every proof holds:
+
+| Proof | Holds when |
+| ----- | ---------- |
+| `run identity` | `--run` names a run of the current repository and branch |
+| `latest run` | no newer run exists on the branch |
+| `no active run` | no run is active on the branch |
+| `failed run` | the run's status is `failed`, not `cancelled` or `completed` |
+| `unpublished run` | the run never pushed |
+| `durable checkpoint` | the run's record holds one row per step of its pinned pipeline: completed or skipped steps, exactly one failed step, then steps that never ran |
+| `eligible failure` | the failed step's recorded cause is an agent invocation failure |
+| `reusable evidence` | the failed step is Test or an earlier step |
+| `preserved head` | the run verified its final head when it failed, and the gate still keeps exactly that commit: its recovery ref when the pipeline moved the head, the submitted commit otherwise |
+| `clean branch` | the working tree has no uncommitted changes |
+| `matching head` | the local `HEAD` is exactly the preserved head; adopt it first with `no-mistakes axi sync --recover` |
+| `compatible configuration` | the run has no verification plan, its Pi profile still resolves to the same model and effort, and the repository's gates, read from the freshly fetched trusted default branch, are the gates the run pinned. A carried Review also needs the same effective repository configuration as the trusted commit its rounds recorded, the same global configuration when its rounds recorded one, and the same agent and model that served each carried step (an `auto` agent is resolved first). The configuration is checked twice: once before the launch, and again against the configuration the new run actually loads, so a change between the two refuses the retry. The refusal names the changed setting |
+| `review conversation` | a carried Review that recorded a question still has its question records on disk. They are copied into the new run, so open and withdrawn questions reach the PR body; if they are gone, the retry is refused |
+
+Each refusal names the failed proof and points to `no-mistakes rerun`.
+The new run records which run, step, and round it continues, the failed step's error, and the preserved head it started from.
+Its run object shows that link as `retry_of`, and the failed run's run object names its continuation as `retried_by`; the new run's own outcome completes the trail.
+A failed run is continued at most once.
+Retry is never offered as an automatic next action: it runs only when you ask for it.
+Like `axi run`, it then blocks until the next gate, CI-ready decision point, or final outcome, bounded by `--wait` (default `8m`).
+
+| Flag | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `--run` | `string` | (none) | ID of the failed run, which must be the current branch's latest run (required) |
+| `--wait` | `duration` | `8m` | Maximum time to block before returning a structured reattach hint |
+
 ## no-mistakes eject
 
 Remove the gate from the current repository.
@@ -571,7 +631,9 @@ inherited from the selected prior run; `--no-publish-intent` and the global
 default can only add omission, never remove it. If another run is active on that branch, rerun
 cancels it before starting over. Treat rerun as a between-runs action after a
 failed or cancelled outcome; use `axi run` for separate local fixes, and do not
-use rerun to bypass a gate.
+use rerun to bypass a gate. When the run failed only because an agent invocation
+failed, [`no-mistakes axi retry`](#no-mistakes-axi-retry) continues it from the
+failed step instead of repeating every completed step.
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
@@ -696,7 +758,7 @@ The standalone runner rows inspect default binary names; each ACP alias row (`cu
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
 
-`doctor` checks `gh` and `az` availability, and that each configured [provider plugin](/no-mistakes/reference/global-config/#provider_plugins) command resolves (it does not run the plugin's handshake). [Provider Integration](/no-mistakes/guides/provider-integration/) owns the separate setup checks for GitLab, Forgejo, Bitbucket Cloud, Gitea, and the Azure DevOps extension and PAT.
+`doctor` checks `gh`, `az`, and `origin` (Cursor Origin) availability, and that each configured [provider plugin](/no-mistakes/reference/global-config/#provider_plugins) command resolves (it does not run the plugin's handshake). [Provider Integration](/no-mistakes/guides/provider-integration/) owns the separate setup checks for GitLab, Forgejo, Bitbucket Cloud, Gitea, and the Azure DevOps extension and PAT.
 
 `tea` stays docs-only like `glab`, `forgejo-axi`, and Bitbucket's env vars, rather than an active `doctor` check like `gh`/`az`: Gitea is almost always self-hosted, so a bare "`tea` not found" row would be a near-universal, low-value warning for the vast majority of users who have no Gitea instance at all.
 
@@ -711,7 +773,7 @@ no-mistakes update -y
 no-mistakes update --force
 ```
 
-Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path and falling back to a detached daemon if service startup is unavailable or fails.
+Downloads the latest release, verifies the SHA-256 checksum, atomically replaces the running binary, and resets the daemon when it is running or stale daemon artifacts exist so the new executable is picked up, preferring the managed service path (on macOS and Linux the newly installed binary's `daemon start` rewrites the service definition) and falling back to a detached daemon if service startup is unavailable or fails.
 By default this installs the latest stable release.
 Pass `--beta` to include prereleases and install the latest beta when one is newer than the current stable release.
 Version discovery reads a `channels.json` manifest from the GitHub release-asset CDN (`releases/download/channels/channels.json`) so it does not consume the unauthenticated REST API rate limit. If the manifest is unavailable or invalid, the update fails without falling back to the REST API.
@@ -734,9 +796,10 @@ Start the daemon, installing or refreshing the managed service when possible.
 
 ```sh
 no-mistakes daemon start
+no-mistakes daemon start --force
 ```
 
-Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails. If the daemon is already running, the command refreshes a stale macOS `launchd` or Linux `systemd` service definition and restarts through the managed service; if the definition is unchanged, it reports that the daemon is already running. [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the startup readiness, timeout, fallback cleanup, and singleton lifecycle details.
+Prefers the managed service path and falls back to a detached daemon if service install or startup is unavailable or fails. If the daemon is already running, the command refreshes a stale macOS `launchd` or Linux `systemd` service definition and restarts through the managed service; if the definition is unchanged, it reports that the daemon is already running. That restart passes the same active-run guard as `daemon restart`, so `--force` is needed to refresh a definition while pipeline runs are active. [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the active-run guard, the scope of `--force`, and the startup readiness, timeout, fallback cleanup, and singleton lifecycle details.
 
 ## no-mistakes daemon stop
 

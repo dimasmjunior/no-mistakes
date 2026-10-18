@@ -86,6 +86,21 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			wantSub: "protocol residue",
 		},
 		{
+			name:    "pi missing output tool",
+			errMsg:  `pi did not finish by calling no_mistakes_output alone`,
+			wantSub: "missing output tool",
+		},
+		{
+			name:    "pi missing output tool with benign stderr",
+			errMsg:  `pi did not finish by calling no_mistakes_output alone: transient provider response`,
+			wantSub: "missing output tool",
+		},
+		{
+			name:    "pi fetch failed",
+			errMsg:  `pi exited: exit status 1: fetch failed`,
+			wantSub: "fetch failed",
+		},
+		{
 			name:    "unfused split bare JSON objects",
 			errMsg:  `pi output parse: split bare JSON objects could not be fused into one valid object`,
 			wantSub: "split",
@@ -129,6 +144,50 @@ func TestClassifyTransient_Negative(t *testing.T) {
 		{
 			name:   "schema validation",
 			errMsg: `JSON output missing required field "summary"`,
+		},
+		{
+			name:   "pi model access unauthorized",
+			errMsg: `pi exited: unable to verify model access: 401 unauthorized`,
+		},
+		{
+			name:   "pi model access denied",
+			errMsg: `pi exited: unable to verify model access: 403 forbidden`,
+		},
+		{
+			name:   "pi missing output unauthorized",
+			errMsg: `pi did not finish by calling no_mistakes_output alone: unable to verify model access: 401 unauthorized`,
+		},
+		{
+			name:   "pi missing output permission denied",
+			errMsg: `pi did not finish by calling no_mistakes_output alone: permission denied`,
+		},
+		{
+			name:   "pi missing output forbidden",
+			errMsg: `pi did not finish by calling no_mistakes_output alone: unable to verify model access: 403 forbidden`,
+		},
+		{
+			name:   "pi schema validation",
+			errMsg: `pi output parse: JSON output missing required field "summary"`,
+		},
+		{
+			name:   "pi fetch quota exhausted",
+			errMsg: `pi exited: fetch failed: quota exhausted`,
+		},
+		{
+			name:   "pi fetch permission denied",
+			errMsg: `pi exited: exit status 1: fetch failed: permission denied`,
+		},
+		{
+			name:   "pi fetch unauthorized",
+			errMsg: `pi exited: exit status 1: fetch failed: 401 unauthorized`,
+		},
+		{
+			name:   "pi missing output quota exhausted",
+			errMsg: `pi did not finish by calling no_mistakes_output alone: insufficient_quota`,
+		},
+		{
+			name:   "generic fetch failure",
+			errMsg: `fetch failed`,
 		},
 		{
 			name:   "competing verdicts",
@@ -187,6 +246,16 @@ func TestClassifyTransient_NilAndContext(t *testing.T) {
 	}
 	if _, ok := classifyTransient(context.DeadlineExceeded); ok {
 		t.Error("context.DeadlineExceeded should not be transient")
+	}
+	for _, message := range []string{
+		"pi did not finish by calling no_mistakes_output alone",
+		"pi exited: exit status 1: fetch failed",
+	} {
+		for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+			if label, ok := classifyTransient(fmt.Errorf("%s: %w", message, cause)); ok {
+				t.Errorf("%s wrapping %v must remain terminal, got %q", message, cause, label)
+			}
+		}
 	}
 }
 
@@ -255,6 +324,67 @@ func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 		if !strings.Contains(strings.ToLower(c), "transient") || !strings.Contains(strings.ToLower(c), "overloaded") {
 			t.Errorf("chunk[%d]=%q should mention 'transient' and the classification label", i, c)
 		}
+	}
+}
+
+func TestRunWithRetry_PiTransientThenSucceeds(t *testing.T) {
+	previous := transientBackoff
+	transientBackoff = func(ctx context.Context, _ int) error { return ctx.Err() }
+	t.Cleanup(func() { transientBackoff = previous })
+
+	for _, message := range []string{
+		"pi did not finish by calling no_mistakes_output alone",
+		"pi exited: exit status 1: fetch failed",
+	} {
+		t.Run(message, func(t *testing.T) {
+			calls := 0
+			var events []LifecycleEvent
+			var attempts []Attempt
+			firstErr := errors.New(message)
+			want := &Result{Text: "ok"}
+			opts := RunOpts{
+				OnLifecycle: func(e LifecycleEvent) { events = append(events, e) },
+				OnAttempt:   func(a Attempt) { attempts = append(attempts, a) },
+			}
+			got, err := runWithRetry(context.Background(), "pi", opts, 1, classifyTransient, nil, func() (*Result, error) {
+				calls++
+				if calls == 1 {
+					return nil, firstErr
+				}
+				return want, nil
+			})
+			if err != nil || got != want || calls != 2 {
+				t.Fatalf("result = %v, error = %v, calls = %d; want success on second attempt", got, err, calls)
+			}
+			if len(attempts) != 2 || attempts[0].Err != firstErr || attempts[1].Result != want {
+				t.Fatalf("attempt telemetry = %+v", attempts)
+			}
+			if len(events) != 1 || events[0].Agent != "pi" || events[0].Phase != LifecyclePhaseRetry || !strings.Contains(events[0].Message, "attempt 2/2") {
+				t.Fatalf("retry telemetry = %+v", events)
+			}
+		})
+	}
+}
+
+func TestRunWithRetry_ProtocolResidueTicket401StillRetries(t *testing.T) {
+	previous := transientBackoff
+	transientBackoff = func(ctx context.Context, _ int) error { return ctx.Err() }
+	t.Cleanup(func() { transientBackoff = previous })
+
+	calls := 0
+	residueErr := errors.New(`pi output parse: invalid character '<' after top-level value (output snippet: "{\"summary\":\"ticket 401\"}<html>")`)
+	result, err := runWithRetry(context.Background(), "pi", RunOpts{}, 1, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		if calls == 1 {
+			return nil, residueErr
+		}
+		return &Result{Text: "ok"}, nil
+	})
+	if err != nil || result == nil || result.Text != "ok" {
+		t.Fatalf("result = %+v, error = %v; want retry success", result, err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want one retry", calls)
 	}
 }
 
@@ -476,5 +606,76 @@ func TestTransientBackoffDuration_Progression(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("attempt %d: want %v, got %v", tc.attempt, tc.want, got)
 		}
+	}
+}
+
+func TestRunWithRetry_SkipsRetryWhenFirstAttemptConsumedTheBudget(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	const deadline = 500 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	transientErr := fmt.Errorf("API Error: overloaded_error: please retry")
+	calls := 0
+	_, err := runWithRetry(ctx, "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		time.Sleep(400 * time.Millisecond)
+		return nil, transientErr
+	})
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1: a retry may not start with less budget than the failed attempt took", calls)
+	}
+	if !errors.Is(err, transientErr) {
+		t.Fatalf("err = %v, want it to wrap the original error", err)
+	}
+	if !strings.Contains(err.Error(), "retry skipped") || !strings.Contains(err.Error(), "step budget") {
+		t.Fatalf("err = %q, want a skipped-for-budget message", err)
+	}
+}
+
+func TestRunWithRetry_SkipsRetryWhenBackoffConsumesTheRemainingBudget(t *testing.T) {
+	prev := transientBackoff
+	transientBackoff = func(ctx context.Context, attempt int) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+			return nil
+		}
+	}
+	defer func() { transientBackoff = prev }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	transientErr := fmt.Errorf("API Error: overloaded_error: please retry")
+	calls := 0
+	_, err := runWithRetry(ctx, "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		time.Sleep(200 * time.Millisecond)
+		return nil, transientErr
+	})
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1: the backoff left less budget than the failed attempt took", calls)
+	}
+	if !errors.Is(err, transientErr) || !strings.Contains(err.Error(), "retry skipped") {
+		t.Fatalf("err = %v, want a skipped-for-budget error wrapping the original", err)
+	}
+}
+
+func TestRunWithRetry_RetriesFastFailureUnderShortDeadline(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	calls := 0
+	res, err := runWithRetry(ctx, "claude", RunOpts{}, 3, classifyTransient, nil, func() (*Result, error) {
+		calls++
+		if calls < 2 {
+			return nil, fmt.Errorf("API Error: overloaded_error: please retry")
+		}
+		return &Result{Text: "ok"}, nil
+	})
+	if err != nil || res == nil || res.Text != "ok" || calls != 2 {
+		t.Fatalf("res=%+v err=%v calls=%d, want a successful second attempt", res, err, calls)
 	}
 }
