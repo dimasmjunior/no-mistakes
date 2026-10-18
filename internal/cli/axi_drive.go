@@ -1385,10 +1385,17 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 	// agent stops and asks the user to review and merge instead of waiting.
 	if ciReady {
 		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
-		fields = append(fields, toon.Field{Key: "outcome", Value: qualifyOutcome("checks-passed", rv)})
+		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
+		merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
+		if activity.DeclaredNoCI {
+			merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
+		}
+		if rv.PRURL != "" {
+			merge = fmt.Sprintf("%s: %s", strings.TrimSuffix(merge, "."), rv.PRURL)
+		}
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
-		help := append([]string{checksPassedMergeLine(rv, activity)}, successReportHelp(fixes)...)
+		help := append([]string{merge}, successReportHelp(fixes)...)
 		if rv.TestOverrideReason != "" {
 			help = append(help, "Report the approved Test exception, not a clean Test pass: "+rv.TestOverrideReason)
 		}
@@ -1401,12 +1408,13 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 		return nil
 	}
 
-	// The default green verdict: the run reached its validation verdict and
-	// released the branch, so it reports the same outcome word with the
-	// released contract instead of the still-monitoring one.
+	// The opt-in release verdict: only ci.release_after_checks_pass ends the run
+	// at its checks verdict and releases the branch, so this shape reports the
+	// same outcome word with the released contract instead of the
+	// still-monitoring one.
 	if rv.Status == string(types.RunChecksPassed) {
 		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
-		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeForRun(rv)})
+		fields = append(fields, toon.Field{Key: "outcome", Value: qualifyOutcome("checks-passed", rv)})
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		help := append([]string{checksPassedMergeLine(rv, activity)}, successReportHelp(fixes)...)

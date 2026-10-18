@@ -138,7 +138,7 @@ func TestOutcomeBanner_SuccessShowsCheckmark(t *testing.T) {
 	}
 }
 
-// TestOutcomeBanner_ChecksPassedAnnouncesTheRelease is the default green
+// TestOutcomeBanner_ChecksPassedAnnouncesTheRelease is the opt-in release
 // verdict's banner. The run reached its validation verdict and released the
 // branch, so the banner must not read like an ordinary finished run: the merge
 // decision is the user's, and the run's outcome must stay distinguishable from
