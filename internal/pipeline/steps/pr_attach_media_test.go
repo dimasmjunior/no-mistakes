@@ -232,6 +232,27 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	}
 }
 
+func TestPRStep_NonGitHubForgeLeavesScreenshotUnchanged(t *testing.T) {
+	t.Parallel()
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+	body, logs := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
+		ctx.provider = scm.ProviderGitLab
+		ctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+	})
+	if strings.Contains(body, "user-attachments") {
+		t.Fatalf("GitLab PR must not embed GitHub attachments, got:\n%s", body)
+	}
+	if !strings.Contains(body, "local file:") {
+		t.Fatalf("GitLab screenshot should keep local rendering, got:\n%s", body)
+	}
+	if len(uploader.calls) != 0 {
+		t.Fatalf("GitLab must not upload, calls=%v", uploader.calls)
+	}
+	if !strings.Contains(logs, "GitHub-only") {
+		t.Fatalf("expected GitHub-only skip reason, got %q", logs)
+	}
+}
+
 func TestPRStep_OptInEmbedsGitLabScreenshotAttachment(t *testing.T) {
 	t.Parallel()
 	markdown := "![Checkout screenshot](/uploads/abcdef/checkout.png)"
