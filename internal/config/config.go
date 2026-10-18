@@ -1420,7 +1420,8 @@ forgejo_axi_path: forgejo-axi
 # Idle timeout for the CI monitor: the wait for checks to finish and the merge
 # watch it keeps afterwards. Each base-branch advance re-arms this timer.
 # Set to "unlimited", "none", "off", "never", or any non-positive duration
-# to disable the timeout. Readiness still ends the run by default.
+# to disable the timeout. By default the monitor keeps watching after checks
+# are green; ci.release_after_checks_pass ends the run at readiness.
 # See docs/src/content/docs/reference/global-config.md#ci_timeout.
 ci_timeout: "168h"
 
