@@ -1066,13 +1066,14 @@ func emitLaunchReceipt(cmd *cobra.Command, receipt ipc.LaunchReceipt) {
 // does a gate holding an open review question or an unreadable question history
 // (pipeline.HasUnansweredReviewQuestion / HasUnreadableReviewQuestionHistory).
 //
-// The CI step returns as soon as every check is green, so a run normally
-// finishes there with the checks_passed status and its lane released. Only
-// under the opt-in ci_monitor_until_merged does it keep monitoring an open PR
-// until a human merges or closes it (a live status the TUI shows); in that mode
-// an agent driving the run must not block on that human action, so once CI
-// checks pass driveRun returns with ciReady=true and the daemon keeps
-// monitoring in the background.
+// The CI step keeps monitoring an open PR until a human merges or closes it (a
+// live status the TUI shows), so it never reaches a terminal state on its own
+// by default. An agent driving the run must not block on that human action, so
+// once CI checks pass driveRun returns with ciReady=true: the change is
+// validated and the PR is ready for a human to merge. The daemon keeps
+// monitoring in the background. Under the opt-in ci.release_after_checks_pass
+// the step finishes there instead and the run completes, so driveRun returns
+// the terminal checks-passed outcome.
 func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	return driveRunSelected(ctx, progress, client, socketPath, runID, autoApprove, false)
 }

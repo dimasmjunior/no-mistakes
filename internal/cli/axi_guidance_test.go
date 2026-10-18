@@ -42,7 +42,7 @@ var canonicalReleasedChecksPassedPhrases = []string{
 	"nothing is left watching the PR",
 	"will not rebase or re-push it",
 	"a fresh `no-mistakes axi run`",
-	"ci_monitor_until_merged",
+	"ci.release_after_checks_pass",
 }
 
 var canonicalRerunRecoveryPhrases = []string{

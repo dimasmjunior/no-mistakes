@@ -2,6 +2,7 @@ package citest
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 )
 
+// TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge proves the opt-in
+// ci.release_after_checks_pass: the green observation finishes the step there,
+// so it never waits another poll interval (the recorded step duration is the CI
+// window) and it leaves the checks verdict for the executor to complete
+// atomically. Reading the PR state exactly once pins the other half: with no
+// further poll, a merge that happens afterwards cannot be observed and cannot
+// change what this run records.
 func TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
@@ -30,12 +38,13 @@ func TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.CI.ReleaseAfterChecksPass = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := (&steps.CIStep{}).SetWaitForNextPoll(func(context.Context, time.Duration) error {
-		t.Fatal("the default releases the run at green and must never poll again")
+		t.Fatal("the opt-in release finishes at green and must never poll again")
 		return nil
 	})
 	outcome, err := step.Execute(sctx)
@@ -76,8 +85,8 @@ func TestCIStep_GreenChecksReleaseWithoutWaitingForTheMerge(t *testing.T) {
 	}
 }
 
-// TestCIStep_TrustedNoCIReleasesWithoutWaiting is the same release for the
-// other readiness path: a trusted default-branch no_ci declaration with zero
+// TestCIStep_TrustedNoCIReleasesWithoutWaiting is the same opt-in release for
+// the other readiness path: a trusted default-branch no_ci declaration with zero
 // registered checks. The declaration stays inspectable on the release line.
 func TestCIStep_TrustedNoCIReleasesWithoutWaiting(t *testing.T) {
 	t.Parallel()
@@ -97,6 +106,7 @@ func TestCIStep_TrustedNoCIReleasesWithoutWaiting(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Minute
 	sctx.Config.NoCI = true
+	sctx.Config.CI.ReleaseAfterChecksPass = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -125,6 +135,56 @@ func TestCIStep_TrustedNoCIReleasesWithoutWaiting(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(logs, "\n"), cimonitor.NoChecksPassedCompleteMsg) {
 		t.Fatalf("logs = %v, want the declared no-CI release verdict", logs)
+	}
+}
+
+// TestCIStep_DefaultKeepsMonitoringAfterGreenChecks pins the default the opt-in
+// leaves untouched: a green observation only clears the failure signal, the step
+// never declares the release verdict, and the monitor keeps polling until the PR
+// is merged, closed, or its idle timeout elapses.
+func TestCIStep_DefaultKeepsMonitoringAfterGreenChecks(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
+	env := stepstest.FakeCIGH(t, "OPEN", checksJSON)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+		polls++
+		cancel()
+		return ctx.Err()
+	})
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("default mode must keep monitoring after green checks, got outcome=%#v err=%v", outcome, err)
+	}
+	if polls != 1 {
+		t.Fatalf("polls after green checks = %d, want the monitor's wait", polls)
+	}
+	if outcome != nil && outcome.CIReadyNoCI != nil {
+		t.Fatal("default mode must never declare the opt-in release verdict")
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, cimonitor.ChecksPassedMsg) {
+		t.Fatalf("logs = %v, want the still-monitoring checks-passed line", logs)
+	}
+	if strings.Contains(joined, cimonitor.ChecksPassedCompleteMsg) {
+		t.Fatalf("logs = %v, must not claim the release verdict by default", logs)
 	}
 }
 

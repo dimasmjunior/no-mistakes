@@ -181,7 +181,14 @@ func TestExecutor_TerminalVerdictReadErrors(t *testing.T) {
 			if err := database.UpdateRunPRState(run.ID, "open"); err != nil {
 				t.Fatal(err)
 			}
-			if err := database.SetRunCIReady(run.ID, true); err != nil {
+			// The verdict is read from the durable release marker the opt-in
+			// release path stamps, so the fixture must take that path; a run
+			// that only established readiness has no verdict to read.
+			ci, err := database.InsertStepResult(run.ID, types.StepCI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.CompleteCIStep(ci.ID, run.ID, false, 0, 1234, "ci.log"); err != nil {
 				t.Fatal(err)
 			}
 			raw, err := sql.Open("sqlite", p.DB())

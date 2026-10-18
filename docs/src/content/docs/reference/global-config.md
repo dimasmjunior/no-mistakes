@@ -38,8 +38,6 @@ agent_args_override:
 
 ci_timeout: "168h"
 
-ci_monitor_until_merged: false
-
 step_quiet_warning: "10m"
 
 agent_timeout: "30m"
@@ -90,6 +88,7 @@ ci:
   review_bot_comments: on_failure # or: always
   rebase_behind: false
   carry_review_on_replay: false
+  release_after_checks_pass: false
 
 rebase:
   strategy: rebase # or: merge
@@ -570,7 +569,7 @@ Plugins run through the same environment as built-in provider CLIs (the daemon's
 
 ### ci_timeout
 
-How long the CI step waits for provider CI status to settle before giving up, and how long the opt-in [`ci_monitor_until_merged`](#ci_monitor_until_merged) watch keeps monitoring an open PR after every check is green.
+How long the CI step waits for provider CI status to settle before giving up, and how long it keeps monitoring an open PR after every check is green.
 
 |         |                                                 |
 | ------- | ----------------------------------------------- |
@@ -580,36 +579,16 @@ How long the CI step waits for provider CI status to settle before giving up, an
 Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
-So an actively-updated green PR keeps its monitor no matter how long it stays open, which matters under `ci_monitor_until_merged` - the only mode that monitors a green PR at all.
-If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, Cursor Origin, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push, while a clean behind PR needs no command, except on GitHub when the base requires up-to-date branches (`mergeStateStatus: BEHIND`): that PR waits for a human to bring it up to date, unless [`ci.rebase_behind`](#cirebase_behind) is on.
+So an actively-updated green PR keeps its monitor no matter how long it stays open; under [`ci.release_after_checks_pass`](#cirelease_after_checks_pass) that watch ends at the checks verdict instead.
+If it later develops an actual merge conflict (on GitHub, GitLab, Forgejo, Azure DevOps, Cursor Origin, or a provider plugin declaring `mergeable_state`), the CI auto-fix path rebases it, revalidates from Review because rebasing cannot prove continuity with the reviewed head, and publishes it through Push.
+A clean behind PR needs no command, except on GitHub when the base requires up-to-date branches (`mergeStateStatus: BEHIND`): that PR waits for a human to bring it up to date, unless [`ci.rebase_behind`](#cirebase_behind) is on.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
 While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
 If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
 
-Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to disable this timeout. The run still ends at readiness by default, or when the PR is merged or closed in either mode. You can cancel it with `no-mistakes axi abort --run <id>`.
+Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to disable this timeout. A run still ends when the PR is merged or closed, or at readiness under `ci.release_after_checks_pass`. You can cancel it with `no-mistakes axi abort --run <id>`.
 
 Legacy alias: `babysit_timeout`.
-
-### ci_monitor_until_merged
-
-Whether the CI step keeps monitoring the pull request after every check is green, until the PR is merged or closed.
-
-|         |           |
-| ------- | --------- |
-| Type    | `boolean` |
-| Default | `false`   |
-
-`false` (the default): the green observation is the CI step's verdict.
-The step records readiness and finishes, so the run completes as `checks_passed` and releases its worktree and its lane instead of holding both open for a merge it does not own.
-The recorded CI duration excludes waiting for a later merge. See the [CLI outcome reference](/no-mistakes/reference/cli/#no-mistakes-axi-run) for success and approved-exception reporting.
-The released run does not observe or record a later merge. If merge evidence is independently persisted on the run, it changes only PR state, never the recorded outcome. See [eval merge-derived labels](/no-mistakes/reference/eval/) for the effect on relabeling.
-
-`true`: restores the older watch.
-The run stays active and keeps polling the PR until it is merged, closed, or declined, bounded by [`ci_timeout`](#ci_timeout).
-Use it when you want no-mistakes itself to keep babysitting the PR after checks pass: it re-bases onto the base branch and re-pushes through the force-push safety guard if the PR later conflicts, and it records the merge itself.
-The cost is the lane - the run's worktree stays allocated for as long as the merge takes, and the recorded CI duration then includes that wait.
-
-Global-only, like `ci_timeout`: it decides how long this machine's runs stay alive, so a pushed branch cannot hold another machine's runs open waiting for a merge.
 
 ### step_quiet_warning
 
@@ -999,6 +978,22 @@ The operator-level fallback for [`ci.carry_review_on_replay`](/no-mistakes/refer
 ```yaml
 ci:
   carry_review_on_replay: true
+```
+
+A value in the trusted repository config overrides this global value in both directions. When the trusted repository config omits the key, this global value applies.
+
+### ci.release_after_checks_pass
+
+The operator-level fallback for [`ci.release_after_checks_pass`](/no-mistakes/reference/repo-config/#cirelease_after_checks_pass), whose per-repository reference owns the semantics, the cost, and the trust boundary.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+```yaml
+ci:
+  release_after_checks_pass: true
 ```
 
 A value in the trusted repository config overrides this global value in both directions. When the trusted repository config omits the key, this global value applies.

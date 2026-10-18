@@ -199,17 +199,8 @@ type GlobalConfig struct {
 	// survives on this machine. Global-only for the same reason as Eval: it
 	// describes local disk retention, never a repository policy, so no
 	// pushed branch may set it.
-	Worktree  Worktree      `yaml:"-"`
-	CITimeout time.Duration `yaml:"-"`
-	// CIMonitorUntilMerged keeps the historical CI-step behavior of holding the
-	// run open and monitoring the PR until it is merged or closed. It is false
-	// by default: once every check is green the step records its validation
-	// verdict (outcome: checks-passed) and the run completes, releasing its
-	// worktree and its lane instead of waiting on a human merge decision.
-	// Global-only, like CITimeout: it decides how long this machine's runs stay
-	// alive, never a repository policy, so no pushed branch may set it. When
-	// true, CITimeout bounds the wait exactly as before.
-	CIMonitorUntilMerged      bool          `yaml:"-"`
+	Worktree                  Worktree      `yaml:"-"`
+	CITimeout                 time.Duration `yaml:"-"`
 	StepQuietWarning          time.Duration `yaml:"-"`
 	AgentTimeout              time.Duration `yaml:"-"`
 	ReviewAgentTimeout        time.Duration `yaml:"-"`
@@ -279,7 +270,6 @@ type globalConfigRaw struct {
 	WorktreeRoots             map[string]string          `yaml:"worktree_roots"`
 	Worktree                  WorktreeRaw                `yaml:"worktree"`
 	CITimeout                 string                     `yaml:"ci_timeout"`
-	CIMonitorUntilMerged      *bool                      `yaml:"ci_monitor_until_merged"`
 	DaemonConnectTimeout      string                     `yaml:"daemon_connect_timeout"`
 	BranchSyncRemoteTimeout   string                     `yaml:"branch_sync_remote_timeout"`
 	GateReconcileInterval     string                     `yaml:"gate_reconcile_interval"`
@@ -698,6 +688,9 @@ type CIRaw struct {
 	RebaseBehind *bool `yaml:"rebase_behind"`
 	// CarryReviewOnReplay is a pointer for the same reason as RevalidateRepairs.
 	CarryReviewOnReplay *bool `yaml:"carry_review_on_replay"`
+	// ReleaseAfterChecksPass is a pointer for the same reason as
+	// RevalidateRepairs: a repository must be able to opt back out.
+	ReleaseAfterChecksPass *bool `yaml:"release_after_checks_pass"`
 }
 
 // CI holds the resolved CI-step settings.
@@ -770,6 +763,23 @@ type CI struct {
 	// keeps meaning "every repair re-passes Review", or when the run has a
 	// review-anchored gate, which would otherwise be skipped for the new head.
 	CarryReviewOnReplay bool
+
+	// ReleaseAfterChecksPass makes the CI step finish the run at its checks
+	// verdict instead of monitoring the pull request until it is merged or
+	// closed.
+	//
+	// false (default): the step records readiness and keeps polling, which is
+	// the behavior every run has had until now - a later base-branch advance or
+	// conflict is repaired and the merge itself is observed, bounded by
+	// ci_timeout.
+	//
+	// true: the green observation ends the step, and the run completes with the
+	// checks_passed status, releasing its worktree and its lane while the merge
+	// decision stays with a human. It is opt-in because it changes how long a
+	// run lives and how much a caller may assume a still-active run is watching
+	// (see VISION.md's cost and consent rules). A trusted repository config may
+	// set it for its own workflow.
+	ReleaseAfterChecksPass bool
 }
 
 // RebaseRaw is the YAML representation of rebase-step settings.
@@ -832,7 +842,6 @@ type Config struct {
 	AgentConfig               map[string]agentcfg.Profile
 	ReviewAgents              map[string]ReviewAgent
 	CITimeout                 time.Duration
-	CIMonitorUntilMerged      bool
 	StepQuietWarning          time.Duration
 	AgentTimeout              time.Duration
 	ReviewAgentTimeout        time.Duration
@@ -1408,23 +1417,12 @@ forgejo_axi_path: forgejo-axi
 #   cursor: cursor-agent acp
 #   devin: devin acp
 
-# Idle timeout for CI readiness and, when ci_monitor_until_merged is true,
-# the subsequent merge watch. Each base-branch advance re-arms this timer.
+# Idle timeout for the CI monitor: the wait for checks to finish and the merge
+# watch it keeps afterwards. Each base-branch advance re-arms this timer.
 # Set to "unlimited", "none", "off", "never", or any non-positive duration
 # to disable the timeout. Readiness still ends the run by default.
 # See docs/src/content/docs/reference/global-config.md#ci_timeout.
 ci_timeout: "168h"
-
-# Whether the CI step keeps monitoring the pull request after every check is
-# green, until the PR is merged or closed. Default false: once the checks are
-# green the run records its validation verdict (outcome: checks-passed, run
-# status: checks_passed) and finishes immediately, releasing its worktree and
-# its lane, because whether and when the PR is merged is a human decision that
-# this run neither owns nor needs to observe. Set true to hold the run open and
-# keep monitoring instead - which keeps the older behavior of auto-rebasing and
-# re-pushing the branch if the base branch later conflicts, and of observing the
-# merge itself, bounded by ci_timeout above. Global-only, like ci_timeout.
-ci_monitor_until_merged: false
 
 # AXI status marks a running/fixing step as quiet when no step log or native
 # agent lifecycle activity has appeared for this long. This is observability
@@ -1606,6 +1604,18 @@ ci:
   # repository that sets ci.carry_review_on_replay on its own default branch
   # overrides this value.
   carry_review_on_replay: false
+
+  # Whether the CI step finishes the run as soon as every check is green
+  # instead of monitoring the pull request until it is merged or closed.
+  # Defaults to false, which is what the step has always done: the run stays
+  # open, keeps watching the PR, and can still auto-rebase it if the base branch
+  # later conflicts. Set true to record the checks-passed verdict and release
+  # the run there (outcome: checks-passed, run status: checks_passed), so the
+  # run's worktree and lane are not held for a human merge decision - the
+  # recorded CI duration then measures CI only. CI readiness is still recorded
+  # either way; a repository that sets ci.release_after_checks_pass on its own
+  # default branch overrides this value.
+  release_after_checks_pass: false
 
 # Auto-fix commit subject template. Available variables: {{.Step}}, {{.Summary}}, and {{.Branch}}.
 # When set to anything but the default, it also renders the Push step's
@@ -2600,9 +2610,6 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 		}
 		cfg.CITimeout = d
 	}
-	if raw.CIMonitorUntilMerged != nil {
-		cfg.CIMonitorUntilMerged = *raw.CIMonitorUntilMerged
-	}
 	if raw.StepQuietWarning != "" {
 		d, err := time.ParseDuration(raw.StepQuietWarning)
 		if err != nil {
@@ -3570,6 +3577,9 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 	if src.CarryReviewOnReplay != nil {
 		dst.CarryReviewOnReplay = *src.CarryReviewOnReplay
 	}
+	if src.ReleaseAfterChecksPass != nil {
+		dst.ReleaseAfterChecksPass = *src.ReleaseAfterChecksPass
+	}
 }
 
 // validateCIRaw fails the config closed on an unrecognized
@@ -3771,7 +3781,6 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 		AgentConfig:               global.AgentConfig,
 		ReviewAgents:              global.ReviewAgents,
 		CITimeout:                 global.CITimeout,
-		CIMonitorUntilMerged:      global.CIMonitorUntilMerged,
 		StepQuietWarning:          global.StepQuietWarning,
 		AgentTimeout:              global.AgentTimeout,
 		ReviewAgentTimeout:        global.ReviewAgentTimeout,

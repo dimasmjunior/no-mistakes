@@ -362,7 +362,6 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -466,7 +465,6 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	// shells out several times per poll, so a short wall-clock timeout makes the
 	// assertion depend on runner speed (especially under -race and on Windows).
 	sctx.Config.CITimeout = config.CITimeoutUnlimited
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -585,7 +583,6 @@ func TestCIStep_CheckReadFailureCounterResetsAfterSuccessfulRead(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 60 * time.Second
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -628,7 +625,6 @@ func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
-	stepstest.MonitorUntilMerged(sctx)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -738,7 +734,6 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
-	stepstest.MonitorUntilMerged(sctx)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -850,7 +845,6 @@ func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
 	sctx.Config.NoCI = true
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -920,7 +914,6 @@ func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
 	sctx.Config.NoCI = false
 	zero := 0
 	sctx.Config.AutoFix.CI = zero
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -1074,7 +1067,6 @@ func TestCIStep_NonEmptyPassingChecksContinueMonitoring(t *testing.T) {
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -1123,7 +1115,6 @@ func TestCIStep_BaseBranchAdvanceRearmsTimeout(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	stepstest.MonitorUntilMerged(sctx)
 	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
@@ -1192,7 +1183,6 @@ func TestCIStep_StableBaseStillTimesOut(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	stepstest.MonitorUntilMerged(sctx)
 	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
@@ -1240,7 +1230,6 @@ func TestCIStep_UnresolvedFallbackBaseTipDoesNotRearmTimeout(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	stepstest.MonitorUntilMerged(sctx)
 	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
@@ -1304,7 +1293,6 @@ func TestCIStep_ExpiredTimeoutSkipsBaseTipResolver(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	stepstest.MonitorUntilMerged(sctx)
 	sctx.Config.CITimeout = 10 * time.Second
 
 	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
@@ -1345,7 +1333,6 @@ func TestCIStep_BaseTipResolverDeadlineIsBoundedByRemainingTimeout(t *testing.T)
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	stepstest.MonitorUntilMerged(sctx)
 	sctx.Config.CITimeout = 10 * time.Second
 
 	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
@@ -1397,7 +1384,6 @@ func TestCIStep_UnlimitedTimeoutNeverExpires(t *testing.T) {
 	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	stepstest.MonitorUntilMerged(sctx)
 	sctx.Config.CITimeout = config.CITimeoutUnlimited
 
 	var logs []string
@@ -1509,7 +1495,6 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -1610,7 +1595,6 @@ func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -1840,7 +1824,6 @@ func TestCIStep_MovedPublishedHeadClearsCIReadiness(t *testing.T) {
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
-	stepstest.MonitorUntilMerged(sctx)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2286,7 +2269,6 @@ func TestCIStep_GreenChecksAtAdvancedHeadAreRecognizedWhileRunTracksOlderHead(t 
 	sctx.Config.CITimeout = 30 * time.Minute
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: config.DefaultCIRerunTransient}
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -2495,7 +2477,6 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 	sctx.Config.CITimeout = 4 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -2577,7 +2558,6 @@ func TestCIStep_SameHeadGreenRerunEmitsChecksPassed(t *testing.T) {
 	sctx.Config.CITimeout = 4 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 3}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -2637,7 +2617,6 @@ func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 	sctx.Config.CITimeout = 4 * time.Hour
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
-	stepstest.MonitorUntilMerged(sctx)
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }

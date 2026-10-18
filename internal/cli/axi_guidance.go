@@ -2,7 +2,7 @@ package cli
 
 // staleMonitorGuidance is the canonical, point-of-use guidance an agent reads
 // when `axi run` returns `checks-passed` while the CI step is still monitoring,
-// which only happens under the opt-in `ci_monitor_until_merged`: what to do if
+// which is the default behaviour: what to do if
 // that PR later falls behind the default branch or hits a merge conflict
 // (commonly because another PR merged first). The live CI monitor keeps running
 // after checks pass and auto-rebases onto the base, resolves the conflict,
@@ -20,10 +20,10 @@ const staleMonitorGuidance = "If this PR later falls behind the default branch o
 // releasedChecksPassedGuidance is the canonical, point-of-use guidance an agent
 // reads when `axi run` returns the terminal `checks-passed` outcome: the run
 // reached its validation verdict and released the branch, so no monitor is left
-// watching the PR and the merge is entirely the user's decision. The default
-// path produces this shape; only `ci_monitor_until_merged: true` produces the
-// still-monitoring one, which carries staleMonitorGuidance instead.
-const releasedChecksPassedGuidance = "This run is finished: it validated the head and released the branch, so nothing is left watching the PR and the merge decision is the user's. If the PR later falls behind the default branch or conflicts before it is merged, this run will not rebase or re-push it - update the branch and start a fresh `no-mistakes axi run` on the updated head instead. Set `ci_monitor_until_merged: true` in the global config to keep a run watching a green PR until it is merged."
+// watching the PR and the merge is entirely the user's decision. Only the
+// opt-in `ci.release_after_checks_pass` produces this shape; the default
+// behaviour keeps monitoring and carries staleMonitorGuidance instead.
+const releasedChecksPassedGuidance = "This run is finished: it validated the head and released the branch, so nothing is left watching the PR and the merge decision is the user's. If the PR later falls behind the default branch or conflicts before it is merged, this run will not rebase or re-push it - update the branch and start a fresh `no-mistakes axi run` on the updated head instead. This shape only exists when the operator enabled `ci.release_after_checks_pass`; without it the run keeps watching a green PR until it is merged."
 
 // preserveGateFixCommitsGuidance is the canonical, point-of-use guidance an
 // agent reads when it needs to make another fix after a gate round already

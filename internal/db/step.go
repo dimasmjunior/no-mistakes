@@ -431,7 +431,7 @@ func (d *DB) CompleteCIStep(id, runID string, declaredNoCI bool, exitCode int, d
 	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
 		return fmt.Errorf("complete CI step: step row not found")
 	}
-	result, err = tx.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ?`, ts, declaredNoCI, ts, runID)
+	result, err = tx.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, ci_released_at = ?, updated_at = ? WHERE id = ?`, ts, declaredNoCI, ts, ts, runID)
 	if err != nil {
 		return fmt.Errorf("record CI readiness: %w", err)
 	}

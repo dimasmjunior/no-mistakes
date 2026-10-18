@@ -35,17 +35,18 @@ const (
 	ciBehindBaseMsg             = cimonitor.BehindBaseMsg
 )
 
-// CIStep monitors an open PR until its checks are green, or - when the operator
-// opts into ci_monitor_until_merged - until the PR is merged, closed, or its
-// configured idle timeout elapses. It repairs CI failures through the
-// executor's shared findings machinery.
+// CIStep monitors an open PR until it is merged, closed, or its configured idle
+// timeout elapses, and repairs CI failures through the executor's shared
+// findings machinery. With ci.release_after_checks_pass it instead finishes the
+// run at the checks verdict.
 //
-// By default the green observation is the step's verdict: readiness is
-// recorded, the step completes, and the run finishes with the terminal
-// checks_passed status, which releases its worktree and lane while leaving the
-// merge decision to a human. Only the opt-in watch keeps the run open for the
-// merge, which is also what makes the recorded step duration include
-// merge-waiting time.
+// By default the green observation only clears the failure signal: the monitor
+// keeps watching the PR, so the run stays open and a later base-branch advance
+// is still repaired on its own. That is also why the recorded step duration
+// includes merge-waiting time. The opt-in release finishes the step there
+// instead, recording readiness and completing the run with the terminal
+// checks_passed status, which releases its worktree and lane and leaves the
+// merge decision to a human.
 //
 // Execute has the same shape as the review step's: when the executor
 // re-executes it as a fix round (sctx.Fixing), it first repairs the findings
@@ -448,15 +449,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		timeout = config.DefaultCITimeout
 	}
 
-	monitorUntilMerged := ciMonitorUntilMerged(sctx)
-	if monitorUntilMerged {
-		if unlimited {
-			sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (no timeout, until merged or closed)...", prNumber))
-		} else {
-			sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
-		}
-	} else {
+	releaseAfterChecksPass := ciReleaseAfterChecksPass(sctx)
+	if releaseAfterChecksPass {
 		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s until every check is green...", prNumber))
+	} else if unlimited {
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (no timeout, until merged or closed)...", prNumber))
+	} else {
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
 	}
 	// State the repair policy once, at entry, rather than at every poll: which
 	// of the two very differently priced paths a repair will take is the single
@@ -902,7 +901,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					}
 					sctx.DeferredFindings = ""
 					declaredNoCI := len(checks) == 0
-					if !monitorUntilMerged {
+					// The default keeps watching: the green observation only
+					// clears the failure signal, as it always has, so the run
+					// stays open until the PR is merged, closed, or declined.
+					// ci.release_after_checks_pass opts into finishing here
+					// instead, which records the checks verdict and releases the
+					// run's worktree and lane.
+					if releaseAfterChecksPass {
 						completeMsg := ciChecksPassedCompleteMsg
 						if declaredNoCI {
 							completeMsg = ciNoChecksPassedCompleteMsg
@@ -969,12 +974,11 @@ func ciReadyMessage(message string) (ready, declaredNoCI bool) {
 	}
 }
 
-// ciMonitorUntilMerged reports whether the operator opted into the historical
-// CI-step watch with ci_monitor_until_merged. The default is off: a green
-// observation is the step's verdict, so the run finishes and releases its
-// worktree and lane rather than staying open until a human merges the PR.
-func ciMonitorUntilMerged(sctx *pipeline.StepContext) bool {
-	return sctx != nil && sctx.Config != nil && sctx.Config.CIMonitorUntilMerged
+// ciReleaseAfterChecksPass reports whether the operator opted into finishing the
+// run at the checks verdict. The default is off: the monitor keeps watching the
+// PR until it is merged or closed, exactly as it always has.
+func ciReleaseAfterChecksPass(sctx *pipeline.StepContext) bool {
+	return sctx != nil && sctx.Config != nil && sctx.Config.CI.ReleaseAfterChecksPass
 }
 
 func clearCIMonitorReady(sctx *pipeline.StepContext) {

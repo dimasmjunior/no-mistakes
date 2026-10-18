@@ -20,13 +20,13 @@ import "strings"
 const (
 	// ChecksPassedMsg is logged when every CI check has passed but the PR is
 	// not yet merged or closed, so the monitor keeps watching subject to its
-	// configured timeout. It is only produced when the operator opted into that
-	// watch with ci_monitor_until_merged.
+	// configured timeout. This is the default behaviour.
 	ChecksPassedMsg = "all CI checks passed - still monitoring until merged or closed"
-	// ChecksPassedCompleteMsg is the default green verdict: every CI check has
-	// passed, so the step records readiness and finishes, releasing the run
-	// instead of waiting for a human merge decision. It names the release
-	// explicitly because the identical observation used to mean the opposite.
+	// ChecksPassedCompleteMsg is the green verdict under the opt-in
+	// ci.release_after_checks_pass: every CI check has passed, so the step
+	// records readiness and finishes, releasing the run instead of waiting for
+	// a human merge decision. It names the release explicitly because the
+	// identical observation means the opposite by default.
 	ChecksPassedCompleteMsg = "all CI checks passed - validation complete, releasing without waiting for the merge"
 	// NoChecksPassedMsg is logged only when the trusted default-branch config
 	// declares `no_ci: true` and the forge reports zero checks. The message
