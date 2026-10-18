@@ -25,6 +25,7 @@ func TestPRTestingSummary_AdjacentMediaStartOutsideThePreviousListItem(t *testin
 			}
 			results, rounds := testStepWithArtifacts(`{"kind":"image","label":"First image","path":"a.png"},{"kind":"video","label":"Second recording","path":"b.mp4"}`)
 			sctx := &pipeline.StepContext{Ctx: context.Background(), Repo: &db.Repo{UpstreamURL: remote}, Run: &db.Run{HeadSHA: testPipelineHeadSHA}, WorkDir: t.TempDir()}
+			sctx.Config = strictEvidenceConfig(t, gitLabEvidencePublicationYAML, "")
 			body := buildPRTestingSummary(sctx, results, rounds, nil, provider, attachments)
 			video := attachments["b.mp4"]
 			if provider == scm.ProviderGitLab {

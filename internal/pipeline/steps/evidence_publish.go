@@ -40,6 +40,7 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 	if sctx == nil || sctx.Config == nil || sctx.Repo == nil || sctx.Run == nil || !sctx.Config.Test.Evidence.StoreInRepo {
 		return nil
 	}
+	gitlabEvidence := gitLabEvidenceEnabled(sctx, scm.ProviderUnknown)
 	sourceDir := testEvidenceDir(sctx)
 	if sourceDir == "" {
 		return nil
@@ -54,9 +55,17 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 	// never publish one. Without a link base there is nothing to gain from
 	// publishing, so the branch is not pushed at all rather than pushed and
 	// never referenced. The forge adapter builds the blob and raw URL prefixes.
-	blobPrefix, rawPrefix, supported := repositoryFileLinks(sctx, resolvedProvider(sctx), sctx.Repo.PushURL())
+	linkURL := sctx.Repo.UpstreamURL
+	if forkURL := strings.TrimSpace(sctx.Repo.ForkURL); forkURL != "" {
+		linkURL = forkURL
+	}
+	blobPrefix, rawPrefix, supported := repositoryFileLinks(sctx, gitlabEvidence, linkURL)
 	if !supported {
-		sctx.Log("test evidence branch not published: this forge has no supported file links; media attachments are handled separately")
+		if gitlabEvidence {
+			sctx.Log("test evidence branch not published: this forge has no supported file links; media attachments are handled separately")
+		} else {
+			sctx.Log("test evidence not published: this provider has no derivable file links, linking local paths instead")
+		}
 		return nil
 	}
 
@@ -83,7 +92,11 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		ForbiddenBranches: []string{branch, sctx.Repo.DefaultBranch},
 	})
 	if err != nil {
-		sctx.Log(fmt.Sprintf("test evidence branch not published, media attachments are handled separately: %v", err))
+		if gitlabEvidence {
+			sctx.Log(fmt.Sprintf("test evidence branch not published, media attachments are handled separately: %v", err))
+		} else {
+			sctx.Log(fmt.Sprintf("test evidence not published, linking local paths instead: %v", err))
+		}
 		return nil
 	}
 	if result == nil || result.CommitSHA == "" {
@@ -102,13 +115,30 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 
 // repositoryFileLinks returns the forge's blob and raw URL prefixes. Source-head
 // artifact links, branch publication, and the Test prompt share this check.
-func repositoryFileLinks(sctx *pipeline.StepContext, provider scm.Provider, remoteURL string) (string, string, bool) {
-	host, _ := buildHost(sctx, provider)
+func repositoryFileLinks(sctx *pipeline.StepContext, gitlabEvidence bool, remoteURL string) (string, string, bool) {
+	if !gitlabEvidence {
+		repo := githubRepoPath(remoteURL)
+		if repo == "" {
+			return "", "", false
+		}
+		return "https://github.com/" + repo + "/blob/", "https://raw.githubusercontent.com/" + repo + "/", true
+	}
+	host, _ := buildHost(sctx, scm.ProviderGitLab)
 	linker, ok := host.(scm.RepositoryFileLinker)
 	if !ok {
 		return "", "", false
 	}
 	return linker.RepositoryFileLinks(remoteURL)
+}
+
+func gitLabEvidenceEnabled(sctx *pipeline.StepContext, provider scm.Provider) bool {
+	if sctx == nil || sctx.Config == nil || !sctx.Config.Providers.GitLab.EvidencePublication {
+		return false
+	}
+	if provider == scm.ProviderUnknown {
+		provider = resolvedProviderForBody(sctx)
+	}
+	return provider == scm.ProviderGitLab
 }
 
 // target returns the PR link for an artifact path published by this run, or ""

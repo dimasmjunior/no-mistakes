@@ -18,8 +18,8 @@ func TestPRStep_GitLabMediaRendersAreIdempotentAndTrackChangedContents(t *testin
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
-	enabled := true
-	sctx.Config.Test.Evidence.AttachMedia = &enabled
+	sctx.Config.Test.Evidence.AttachMedia = true
+	sctx.Config.Providers.GitLab.EvidencePublication = true
 	sctx.Repo.UpstreamURL = "https://gitlab.example/group/sub/widgets.git"
 	image := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.avif", []byte("image-v1"))
 	video := writeEvidenceFile(t, sctx.EvidenceDir, "walk.MP4", []byte("video"))
@@ -71,8 +71,8 @@ func TestPRStep_GitLabUploadFailureKeepsLocalReferenceAndReportsReason(t *testin
 	body, logs := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 		ctx.provider = scm.ProviderGitLab
 		ctx.Repo.UpstreamURL = "https://gitlab.example/group/widgets.git"
-		enabled := true
-		ctx.Config.Test.Evidence.AttachMedia = &enabled
+		ctx.Config.Test.Evidence.AttachMedia = true
+		ctx.Config.Providers.GitLab.EvidencePublication = true
 	})
 	if !strings.Contains(body, "local file:") || strings.Contains(body, "/uploads/") {
 		t.Fatalf("failed upload must retain local evidence, got:\n%s", body)
@@ -89,15 +89,16 @@ func TestPRStep_GitLabMediaRequiresOptIn(t *testing.T) {
 		name         string
 		global, repo *bool
 		store, want  bool
+		publication  bool
 	}{
 		{name: "unconfigured"},
-		{name: "global opt-in", global: &enabled, want: true},
-		{name: "repository opt-in", repo: &enabled, want: true},
-		{name: "repository opt-out", global: &enabled, repo: &disabled},
-		{name: "repository overrides global opt-out", global: &disabled, repo: &enabled, want: true},
-		{name: "global opt-out", global: &disabled},
-		{name: "evidence branch opt-in", store: true, want: true},
-		{name: "evidence branch implies media", repo: &disabled, store: true, want: true},
+		{name: "global opt-in", global: &enabled, want: true, publication: true},
+		{name: "repository opt-in", repo: &enabled, want: true, publication: true},
+		{name: "repository opt-out", global: &enabled, repo: &disabled, publication: true},
+		{name: "repository overrides global opt-out", global: &disabled, repo: &enabled, want: true, publication: true},
+		{name: "global opt-out", global: &disabled, publication: true},
+		{name: "evidence branch opt-in", store: true, want: true, publication: true},
+		{name: "evidence branch implies media", repo: &disabled, store: true, want: true, publication: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -110,6 +111,7 @@ func TestPRStep_GitLabMediaRequiresOptIn(t *testing.T) {
 					&config.GlobalConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: tc.global}}},
 					&config.RepoConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: tc.repo, StoreInRepo: &tc.store}}},
 				).Test
+				ctx.Config.Providers.GitLab.EvidencePublication = tc.publication
 			})
 			if tc.want {
 				if !strings.Contains(body, markdown) || strings.Contains(body, "local file:") || len(uploader.calls) != 1 {
@@ -128,8 +130,8 @@ func TestPRStep_GitLabNeverUploadsSymbolicLinks(t *testing.T) {
 	body, logs := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 		ctx.provider = scm.ProviderGitLab
 		ctx.Repo.UpstreamURL = "https://gitlab.example/group/widgets.git"
-		enabled := true
-		ctx.Config.Test.Evidence.AttachMedia = &enabled
+		ctx.Config.Test.Evidence.AttachMedia = true
+		ctx.Config.Providers.GitLab.EvidencePublication = true
 		target := writeEvidenceFile(t, ctx.EvidenceDir, "target.png", []byte("private"))
 		if err := os.Remove(ctx.png); err != nil {
 			t.Fatal(err)

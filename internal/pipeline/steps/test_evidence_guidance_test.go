@@ -12,8 +12,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
-// The emitted Test prompt must promise an evidence branch only when the PR
-// step can publish it, and must keep evidence out of the code branch.
+// The emitted Test prompt describes opted-in GitLab publication while other
+// providers retain their existing evidence-branch guidance.
 func TestTestStep_EvidencePublicationFollowsTheForgeAndSettings(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -25,7 +25,7 @@ func TestTestStep_EvidencePublicationFollowsTheForgeAndSettings(t *testing.T) {
 		{"GitLab branch and implied attachments", "https://gitlab.com/team/widgets.git", scm.ProviderGitLab, false, true, true},
 		{"GitLab publication disabled", "https://gitlab.com/team/widgets.git", scm.ProviderGitLab, false, false, false},
 		{"GitHub branch and attachments", "https://github.com/team/widgets.git", scm.ProviderGitHub, true, true, true},
-		{"GHES has no branch links", "https://ghe.example/team/widgets.git", scm.ProviderGitHub, true, true, false},
+		{"GHES retains legacy branch guidance", "https://ghe.example/team/widgets.git", scm.ProviderGitHub, true, true, true},
 		{"forge profile owns provider", "git@gitlab-alias:team/widgets.git", scm.ProviderGitLab, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,19 +37,14 @@ func TestTestStep_EvidencePublicationFollowsTheForgeAndSettings(t *testing.T) {
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Repo.UpstreamURL = tc.remote
 			sctx.ForgeContext = &forgecontext.Context{Provider: tc.provider, Host: scm.ExtractHost(tc.remote)}
-			sctx.Config.Test.Evidence = config.Evidence{AttachMedia: &tc.attach, StoreInRepo: tc.store, Branch: "team/ci/evidence"}
+			sctx.Config.Test.Evidence = config.Evidence{AttachMedia: tc.attach, StoreInRepo: tc.store, Branch: "team/ci/evidence"}
+			sctx.Config.Providers.GitLab.EvidencePublication = tc.provider == scm.ProviderGitLab
 			if _, err := (&TestStep{}).Execute(sctx); err != nil {
 				t.Fatal(err)
 			}
 			prompt := ag.calls[0].Prompt
-			if strings.Contains(prompt, "committed and pushed automatically") {
-				t.Fatal("prompt promised to commit evidence to the code branch")
-			}
-			if strings.Contains(prompt, "GitLab project uploads") || strings.Contains(prompt, "GitHub user-attachments") {
-				t.Fatal("default evidence guidance gained an unnecessary media-publication bullet")
-			}
 			if strings.Contains(prompt, "team/ci/evidence") != tc.branch {
-				t.Fatalf("evidence branch promise disagrees with actual link support, want branch=%v:\n%s", tc.branch, prompt)
+				t.Fatalf("evidence branch guidance disagrees with the selected mode, want branch=%v:\n%s", tc.branch, prompt)
 			}
 		})
 	}

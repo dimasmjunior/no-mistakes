@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -30,6 +32,7 @@ func TestPRStep_TrackedGitLabArtifactsUseImmutableSourceLinks(t *testing.T) {
 			gitCmd(t, dir, "commit", "-m", "add tracked transcript")
 			head := gitCmd(t, dir, "rev-parse", "HEAD")
 			sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, head, config.Commands{})
+			sctx.Config.Providers.GitLab.EvidencePublication = true
 			sctx.Repo.UpstreamURL = "git@gitlab-alias:group/sub/widgets.git"
 			sctx.ForgeContext = &forgecontext.Context{Provider: scm.ProviderGitLab, Host: "gitlab.example"}
 			artifactPath := name
@@ -66,7 +69,11 @@ func TestTrackedArtifactTargetsUseForgeRawAndBlobRoutes(t *testing.T) {
 		{"https://github.com/example/widgets.git", "https://github.com/example/widgets/", scm.ProviderGitHub},
 	} {
 		results, rounds := testStepWithArtifacts(`{"kind":"log","label":"Tracked log","path":"artifacts/server.log"}`)
-		body := BuildTestingSummaryForPRWithProvider(results, rounds, tc.remote, testPipelineHeadSHA, t.TempDir(), "", nil, tc.provider)
+		sctx := &pipeline.StepContext{
+			Repo: &db.Repo{UpstreamURL: tc.remote}, Run: &db.Run{HeadSHA: testPipelineHeadSHA},
+			Config: strictEvidenceConfig(t, gitLabEvidencePublicationYAML, ""), WorkDir: t.TempDir(),
+		}
+		body := buildPRTestingSummary(sctx, results, rounds, nil, tc.provider, nil)
 		want := tc.web + "blob/" + testPipelineHeadSHA + "/artifacts/server.log"
 		if !strings.Contains(body, want) || strings.Contains(body, "fixture-secret") || strings.Contains(body, "token=fixture") {
 			t.Fatalf("tracked source URL or credential stripping failed:\n%s", body)

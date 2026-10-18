@@ -88,7 +88,7 @@ type testingArtifactRenderState struct {
 
 type testingSummaryOptions struct {
 	flavor               prBodyFlavor
-	provider             scm.Provider
+	gitlabEvidence       bool
 	repoBlobBase         string
 	repoRawBase          string
 	includeTestedDetails bool
@@ -362,7 +362,6 @@ func BuildTestingSummaryForPRWithProvider(steps []*db.StepResult, rounds map[str
 func buildPRTestingSummary(sctx *pipeline.StepContext, steps []*db.StepResult, rounds map[string][]*db.StepRound, links *evidenceLinks, provider scm.Provider, attachments map[string]string) string {
 	opts := testingSummaryOptionsForRepository(sctx, provider)
 	opts.flavor = prBodyFlavorFor(provider)
-	opts.provider = provider
 	opts.compactArtifacts = true
 	opts.summaryParagraph = true
 	opts.omitOutcome = true
@@ -471,15 +470,9 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 }
 
 func needsArtifactBlockSeparator(previous, current string) bool {
-	previous = strings.TrimSpace(previous)
-	current = strings.TrimSpace(current)
-	previousEndsDetails := strings.HasSuffix(previous, "</details>")
-	currentStartsDetails := strings.HasPrefix(current, "<details>")
-	if previousEndsDetails != currentStartsDetails {
-		return true
-	}
-	lastLine := previous[strings.LastIndexByte(previous, '\n')+1:]
-	return strings.HasPrefix(lastLine, "- ") && !strings.HasPrefix(current, "- ")
+	previousEndsDetails := strings.HasSuffix(strings.TrimSpace(previous), "</details>")
+	currentStartsDetails := strings.HasPrefix(strings.TrimSpace(current), "<details>")
+	return previousEndsDetails != currentStartsDetails
 }
 
 func shouldRenderTestingOutcome(opts testingSummaryOptions, wroteSummary bool, outcome string) bool {
@@ -508,21 +501,45 @@ func writeTestingSummary(b *strings.Builder, rendered string, opts testingSummar
 }
 
 func testingSummaryOptionsForRepository(sctx *pipeline.StepContext, provider scm.Provider) testingSummaryOptions {
+	opts := testingSummaryOptions{gitlabEvidence: gitLabEvidenceEnabled(sctx, provider)}
 	ref := strings.TrimSpace(sctx.Run.HeadSHA)
 	if ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
-		return testingSummaryOptions{}
+		return opts
 	}
-	if provider == scm.ProviderUnknown {
-		provider = resolvedProvider(sctx)
+	blob, raw, supported := repositoryFileLinks(sctx, opts.gitlabEvidence, sctx.Repo.UpstreamURL)
+	if supported {
+		opts.repoBlobBase = blob + url.PathEscape(ref) + "/"
+		opts.repoRawBase = raw + url.PathEscape(ref) + "/"
 	}
-	blob, raw, supported := repositoryFileLinks(sctx, provider, sctx.Repo.UpstreamURL)
-	if !supported {
-		return testingSummaryOptions{}
+	return opts
+}
+
+func githubRepoPath(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
 	}
-	return testingSummaryOptions{
-		repoBlobBase: blob + url.PathEscape(ref) + "/",
-		repoRawBase:  raw + url.PathEscape(ref) + "/",
+	if strings.HasPrefix(remote, "git@github.com:") {
+		repo := strings.TrimPrefix(remote, "git@github.com:")
+		return cleanGitHubRepoPath(repo)
 	}
+	parsed, err := url.Parse(remote)
+	if err != nil || !strings.EqualFold(parsed.Host, "github.com") {
+		return ""
+	}
+	return cleanGitHubRepoPath(strings.TrimPrefix(parsed.Path, "/"))
+}
+
+func cleanGitHubRepoPath(repo string) string {
+	repo = strings.TrimSuffix(strings.TrimSpace(repo), ".git")
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	if strings.ContainsAny(repo, "\n\r <>[]()\\") || strings.Contains(repo, "..") {
+		return ""
+	}
+	return url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
 }
 
 func collectTestingSummary(sr *db.StepResult, rounds []*db.StepRound) string {
@@ -694,9 +711,9 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	}
 
 	var b strings.Builder
-	if target != "" && isImageArtifact(artifact.Kind, target) {
+	if target != "" && opts.isImageArtifact(artifact.Kind, target) {
 		b.WriteString(fmt.Sprintf("**%s**\n\n![%s](%s)\n", html.EscapeString(label), markdownAltText(label), target))
-	} else if target != "" && isVideoArtifact(artifact.Kind, target) {
+	} else if target != "" && opts.isVideoArtifact(artifact.Kind, target) {
 		if opts.flavor == prBodyMarkdown {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 		} else {
@@ -744,7 +761,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if caption == "" && !hasFile {
 		if attachment != "" {
 			var b strings.Builder
-			b.WriteString(renderAttachmentMarkdown(artifact, attachment, label, opts.provider))
+			b.WriteString(renderAttachmentMarkdown(artifact, attachment, label, opts.gitlabEvidence))
 			if target != "" {
 				b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 			}
@@ -777,7 +794,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if attachment == "" {
 		return folded
 	}
-	return renderAttachmentMarkdown(artifact, attachment, label, opts.provider) + "\n" + folded
+	return renderAttachmentMarkdown(artifact, attachment, label, opts.gitlabEvidence) + "\n" + folded
 }
 
 func (opts testingSummaryOptions) attachmentURL(artifact types.TestArtifact) string {
@@ -790,8 +807,8 @@ func (opts testingSummaryOptions) attachmentURL(artifact types.TestArtifact) str
 	return strings.TrimSpace(opts.attachments[filepath.Clean(artifact.Path)])
 }
 
-func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string, provider scm.Provider) string {
-	if provider != scm.ProviderGitLab && (isVideoArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, url)) {
+func renderAttachmentMarkdown(artifact types.TestArtifact, url, label string, gitlabEvidence bool) string {
+	if !gitlabEvidence && (isVideoArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, url)) {
 		return url + "\n"
 	}
 	return fmt.Sprintf("![%s](%s)\n", markdownAltText(label), url)
@@ -808,7 +825,7 @@ func embeddedArtifactText(artifact types.TestArtifact, opts testingSummaryOption
 	if state == nil || state.remainingEmbeddedBytes <= 0 {
 		return "", false
 	}
-	if isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path) {
+	if opts.isImageArtifact(artifact.Kind, artifact.Path) || opts.isVideoArtifact(artifact.Kind, artifact.Path) {
 		return "", false
 	}
 	fsPath := artifactFilesystemPath(artifact.Path, opts)
@@ -913,7 +930,7 @@ func trimUTF8Start(data []byte) []byte {
 }
 
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
-	raw := isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path)
+	raw := opts.isImageArtifact(artifact.Kind, artifact.Path) || opts.isVideoArtifact(artifact.Kind, artifact.Path)
 	if target := opts.evidence.target(artifact.Path, raw); target != "" {
 		return target
 	}
@@ -924,10 +941,13 @@ func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptio
 	if opts.repoBlobBase == "" || opts.repoRawBase == "" {
 		return repoPath
 	}
-	if isImageArtifact(artifact.Kind, repoPath) || isVideoArtifact(artifact.Kind, repoPath) {
-		return opts.repoRawBase + joinURLPath("", repoPath)
+	if opts.gitlabEvidence {
+		repoPath = joinURLPath("", repoPath)
 	}
-	return opts.repoBlobBase + joinURLPath("", repoPath)
+	if opts.isImageArtifact(artifact.Kind, repoPath) || opts.isVideoArtifact(artifact.Kind, repoPath) {
+		return opts.repoRawBase + repoPath
+	}
+	return opts.repoBlobBase + repoPath
 }
 
 func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
@@ -941,7 +961,10 @@ func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryO
 	if opts.repoBlobBase == "" {
 		return repoPath
 	}
-	return opts.repoBlobBase + joinURLPath("", repoPath)
+	if opts.gitlabEvidence {
+		repoPath = joinURLPath("", repoPath)
+	}
+	return opts.repoBlobBase + repoPath
 }
 
 func sanitizeArtifactPath(target string, opts testingSummaryOptions) string {
@@ -1093,7 +1116,7 @@ func isImageArtifact(kind, target string) bool {
 		return true
 	}
 	lower := strings.ToLower(target)
-	for _, suffix := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif"} {
+	for _, suffix := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
 		}
@@ -1106,12 +1129,34 @@ func isVideoArtifact(kind, target string) bool {
 		return true
 	}
 	lower := strings.ToLower(target)
-	for _, suffix := range []string{".mp4", ".webm", ".mov", ".m4v", ".ogv"} {
+	for _, suffix := range []string{".mp4", ".webm", ".mov"} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
 		}
 	}
 	return false
+}
+
+func (opts testingSummaryOptions) isImageArtifact(kind, target string) bool {
+	if isImageArtifact(kind, target) {
+		return true
+	}
+	if !opts.gitlabEvidence {
+		return false
+	}
+	lower := strings.ToLower(target)
+	return strings.HasSuffix(lower, ".bmp") || strings.HasSuffix(lower, ".avif")
+}
+
+func (opts testingSummaryOptions) isVideoArtifact(kind, target string) bool {
+	if isVideoArtifact(kind, target) {
+		return true
+	}
+	if !opts.gitlabEvidence {
+		return false
+	}
+	lower := strings.ToLower(target)
+	return strings.HasSuffix(lower, ".m4v") || strings.HasSuffix(lower, ".ogv")
 }
 
 func escapeMarkdownFence(content string) string {

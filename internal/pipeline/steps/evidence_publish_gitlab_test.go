@@ -21,6 +21,7 @@ func newGitLabEvidencePublishContext(t *testing.T, branch, upstream, host string
 	gitCmd(t, sctx.WorkDir, "remote", "set-url", "origin", upstream)
 	sctx.Repo.UpstreamURL = upstream
 	sctx.ForgeContext = &forgecontext.Context{Provider: scm.ProviderGitLab, Host: host}
+	sctx.Config.Providers.GitLab.EvidencePublication = true
 	return sctx, remote
 }
 

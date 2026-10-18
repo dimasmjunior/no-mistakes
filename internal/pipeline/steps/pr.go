@@ -1405,11 +1405,11 @@ func pipelineUpdatesOmissionMarker(omitted int) string {
 	if omitted == 1 {
 		rounds = "round"
 	}
-	return fmt.Sprintf("_... (%d earlier update %s omitted to keep the description within its %d-byte body budget; full history is in the run log.)_", omitted, rounds, maxPullRequestBodyBytes)
+	return fmt.Sprintf("_... (%d earlier update %s omitted to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", omitted, rounds, githubPullRequestBodyHardLimitChars)
 }
 
 func pipelineLatestUpdateTruncationMarker() string {
-	return fmt.Sprintf("_... (latest pipeline update truncated to keep the description within its %d-byte body budget; full history is in the run log.)_", maxPullRequestBodyBytes)
+	return fmt.Sprintf("_... (latest pipeline update truncated to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", githubPullRequestBodyHardLimitChars)
 }
 
 func truncateEssentialPRBodyIfNeeded(body string) string {
@@ -1420,7 +1420,7 @@ func truncateEssentialPRBodyIfNeeded(body string) string {
 }
 
 func essentialPRBodyTruncationMarker() string {
-	return fmt.Sprintf("_... (body truncated to keep the description within its %d-byte body budget.)_", maxPullRequestBodyBytes)
+	return fmt.Sprintf("_... (body truncated to keep the PR body within GitHub's %d-char limit.)_", githubPullRequestBodyHardLimitChars)
 }
 
 func truncatePRBodySections(body string, maxBytes int, marker string) string {
