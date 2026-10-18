@@ -1850,15 +1850,17 @@ func TestRecoverStaleRunsCompletedCI(t *testing.T) {
 		ready     bool
 		completed bool
 		preserved bool
+		unmarked  bool
 		want      types.RunStatus
 	}{
-		{"committed verdict", types.RunRunning, true, true, false, types.RunChecksPassed},
-		{"pending run", types.RunPending, true, true, false, types.RunChecksPassed},
-		{"no readiness", types.RunRunning, false, true, false, types.RunFailed},
-		{"live monitor", types.RunRunning, true, false, false, types.RunCIMonitorInterrupted},
-		{"cancelled", types.RunCancelled, true, true, false, types.RunCancelled},
-		{"failed", types.RunFailed, true, true, false, types.RunFailed},
-		{"preserved", types.RunRunning, true, true, true, types.RunRunning},
+		{"committed verdict", types.RunRunning, true, true, false, false, types.RunChecksPassed},
+		{"pending run", types.RunPending, true, true, false, false, types.RunChecksPassed},
+		{"default mode ready without release marker", types.RunRunning, true, true, false, true, types.RunFailed},
+		{"no readiness", types.RunRunning, false, true, false, false, types.RunFailed},
+		{"live monitor", types.RunRunning, true, false, false, false, types.RunCIMonitorInterrupted},
+		{"cancelled", types.RunCancelled, true, true, false, false, types.RunCancelled},
+		{"failed", types.RunFailed, true, true, false, false, types.RunFailed},
+		{"preserved", types.RunRunning, true, true, true, false, types.RunRunning},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := openTestDB(t)
@@ -1882,7 +1884,14 @@ func TestRecoverStaleRunsCompletedCI(t *testing.T) {
 			if err := d.StartStep(ci.ID); err != nil {
 				t.Fatal(err)
 			}
-			if tc.ready {
+			if tc.unmarked {
+				if err := d.SetRunCIReady(run.ID, true); err != nil {
+					t.Fatal(err)
+				}
+				if err := d.CompleteStepWithStatus(ci.ID, types.StepStatusCompleted, 0, 1234, "ci.log"); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.ready {
 				if err := d.CompleteCIStep(ci.ID, run.ID, false, 0, 1234, "ci.log"); err != nil {
 					t.Fatal(err)
 				}

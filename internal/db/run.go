@@ -1240,7 +1240,7 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	readyResult, err := tx.Exec(
 		`UPDATE runs SET status = ?, error = NULL, push_active = 0,
 		 awaiting_agent_since = NULL, updated_at = ?
-		 WHERE status IN (?, ?) AND ci_ready_at IS NOT NULL
+		 WHERE status IN (?, ?) AND ci_ready_at IS NOT NULL AND ci_released_at IS NOT NULL
 		   AND lower(trim(pr_state)) = 'open'
 		   AND EXISTS (
 		       SELECT 1 FROM step_results ci
