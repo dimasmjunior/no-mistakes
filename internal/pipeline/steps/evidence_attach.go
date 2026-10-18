@@ -33,8 +33,12 @@ func mediaAttachEnabled(sctx *pipeline.StepContext, provider scm.Provider) (bool
 		return false, "media attachments are not supported on GitHub Enterprise Server"
 	}
 	ev := sctx.Config.Test.Evidence
-	if !ev.AttachMedia && !ev.StoreInRepo {
-		return false, "test.evidence.attach_media and store_in_repo are both disabled"
+	attach := provider == scm.ProviderGitHub
+	if ev.AttachMedia != nil {
+		attach = *ev.AttachMedia
+	}
+	if !attach && !ev.StoreInRepo {
+		return false, "media uploads require test.evidence.attach_media: true or store_in_repo: true"
 	}
 	return true, ""
 }

@@ -21,7 +21,7 @@ func TestTestStep_EvidencePublicationFollowsTheForgeAndSettings(t *testing.T) {
 		provider              scm.Provider
 		attach, store, branch bool
 	}{
-		{"GitLab default attachments", "https://gitlab.com/team/widgets.git", scm.ProviderGitLab, true, false, false},
+		{"GitLab opt-in attachments", "https://gitlab.com/team/widgets.git", scm.ProviderGitLab, true, false, false},
 		{"GitLab branch and implied attachments", "https://gitlab.com/team/widgets.git", scm.ProviderGitLab, false, true, true},
 		{"GitLab publication disabled", "https://gitlab.com/team/widgets.git", scm.ProviderGitLab, false, false, false},
 		{"GitHub branch and attachments", "https://github.com/team/widgets.git", scm.ProviderGitHub, true, true, true},
@@ -37,7 +37,7 @@ func TestTestStep_EvidencePublicationFollowsTheForgeAndSettings(t *testing.T) {
 			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 			sctx.Repo.UpstreamURL = tc.remote
 			sctx.ForgeContext = &forgecontext.Context{Provider: tc.provider, Host: scm.ExtractHost(tc.remote)}
-			sctx.Config.Test.Evidence = config.Evidence{AttachMedia: tc.attach, StoreInRepo: tc.store, Branch: "team/ci/evidence"}
+			sctx.Config.Test.Evidence = config.Evidence{AttachMedia: &tc.attach, StoreInRepo: tc.store, Branch: "team/ci/evidence"}
 			if _, err := (&TestStep{}).Execute(sctx); err != nil {
 				t.Fatal(err)
 			}

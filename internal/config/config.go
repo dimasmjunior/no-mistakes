@@ -1066,10 +1066,10 @@ type TestRaw struct {
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type EvidenceRaw struct {
 	StoreInRepo *bool `yaml:"store_in_repo"`
-	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// or GitLab project uploads when the PR or MR body is rendered. It defaults
-	// on; set it false to opt out. store_in_repo also turns uploads on, and when
-	// both apply the body shows the attachment next to its commit-pinned link.
+	// AttachMedia uploads image and video evidence when the PR or MR body is
+	// rendered. Unset defaults on for GitHub and off for GitLab; true opts in
+	// on either forge. store_in_repo also turns uploads on, and when both
+	// apply the body shows the attachment next to its commit-pinned link.
 	// Like store_in_repo, this is pushed-readable.
 	AttachMedia *bool   `yaml:"attach_media"`
 	Dir         *string `yaml:"dir"`
@@ -1110,12 +1110,13 @@ type Test struct {
 // GitLab repository, the run also publishes its artifacts to the orphan Branch
 // of the same repository, under Dir, and links them from the PR or MR body.
 // Evidence never enters the pushed code branch, so it never reaches the
-// default branch's history. AttachMedia (default true) uploads image and video
-// artifacts to GitHub user-attachments or GitLab project uploads when the body
-// is rendered. Text artifacts stay inlined or locally cited.
+// default branch's history. AttachMedia uploads image and video artifacts to
+// GitHub user-attachments or GitLab project uploads when the body is rendered.
+// Nil preserves the forge default: on for GitHub, off for GitLab.
+// Text artifacts stay inlined or locally cited.
 type Evidence struct {
 	StoreInRepo bool
-	AttachMedia bool
+	AttachMedia *bool
 	Dir         string
 	Branch      string
 	// LocalRoot overrides the app-root default for on-disk evidence; empty
@@ -1550,11 +1551,12 @@ intent:
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept on local
-# disk under <NM_HOME>/evidence. attach_media (default true) uploads image and
-# video artifacts to GitHub user-attachments or GitLab project uploads when
-# the PR or MR is rendered; text artifacts stay inlined. On GitHub.com and
-# GitLab, opt in to store_in_repo to also publish the full directory to an
-# orphan evidence branch in the same repository and link it from the PR or MR.
+# disk under <NM_HOME>/evidence. attach_media defaults on for GitHub and off
+# for GitLab. Set it true to upload image and video artifacts to GitHub
+# user-attachments or GitLab project uploads when the PR or MR is rendered;
+# text artifacts stay inlined. On GitHub.com and GitLab, store_in_repo opts
+# in to media uploads and publishes the full directory to an orphan evidence
+# branch in the same repository, linked from the PR or MR.
 # The evidence branch shares no history with your code branches, so artifacts
 # never enter the pushed branch or the default branch. When both are on, the
 # description carries both the attachment and the commit-pinned link.
@@ -3151,14 +3153,12 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 }
 
 // testDefaults returns the default test-step settings. Orphan-branch evidence
-// publication is opt-in (off by default). Image and video uploads at PR render
-// time are on by default so remote reviewers can open screenshots without that
-// branch.
+// publication is opt-in. AttachMedia stays unset until the forge is known at
+// PR render time: GitHub uploads by default, GitLab requires opt-in.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
 			StoreInRepo: false,
-			AttachMedia: true,
 			Dir:         ".no-mistakes/evidence",
 			Branch:      evidence.DefaultBranch,
 			LocalRoot:   "",
@@ -3180,7 +3180,7 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 		dst.Evidence.StoreInRepo = *src.Evidence.StoreInRepo
 	}
 	if src.Evidence.AttachMedia != nil {
-		dst.Evidence.AttachMedia = *src.Evidence.AttachMedia
+		dst.Evidence.AttachMedia = src.Evidence.AttachMedia
 	}
 	if src.Evidence.Dir != nil && strings.TrimSpace(*src.Evidence.Dir) != "" {
 		dst.Evidence.Dir = strings.TrimSpace(*src.Evidence.Dir)

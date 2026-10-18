@@ -168,7 +168,8 @@ func TestPRStep_StoreInRepoKeepsCommitLinkAndAttachment(t *testing.T) {
 	t.Parallel()
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	sctx.Agent = prDraftAgent()
-	sctx.Config.Test.Evidence.AttachMedia = true
+	enabled := true
+	sctx.Config.Test.Evidence.AttachMedia = &enabled
 	png := writeEvidenceFile(t, testEvidenceDir(sctx), "checkout.png", []byte("\x89PNG binary"))
 	insertCompletedStep(t, sctx, types.StepTest, screenshotFindings(png), "")
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
@@ -207,7 +208,8 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	}
 
 	disabled := makeCtx(prDraftAgent())
-	disabled.Config.Test.Evidence.AttachMedia = false
+	off := false
+	disabled.Config.Test.Evidence.AttachMedia = &off
 	today, err := (&PRStep{}).buildPRContent(disabled, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -232,13 +234,15 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	}
 }
 
-func TestPRStep_DefaultConfigEmbedsGitLabScreenshotAttachment(t *testing.T) {
+func TestPRStep_OptInEmbedsGitLabScreenshotAttachment(t *testing.T) {
 	t.Parallel()
 	markdown := "![Checkout screenshot](/uploads/abcdef/checkout.png)"
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": "/uploads/abcdef/checkout.png"}}
 	body, _ := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 		ctx.provider = scm.ProviderGitLab
 		ctx.Repo.UpstreamURL = "https://gitlab.com/example/widgets.git"
+		enabled := true
+		ctx.Config.Test.Evidence.AttachMedia = &enabled
 	})
 	if !strings.Contains(body, markdown) {
 		t.Fatalf("expected GitLab project upload embed, got:\n%s", body)

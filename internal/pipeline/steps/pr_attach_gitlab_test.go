@@ -18,6 +18,8 @@ func TestPRStep_GitLabMediaRendersAreIdempotentAndTrackChangedContents(t *testin
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := newTestContextWithDBRecords(t, prDraftAgent(), dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(sctx)
+	enabled := true
+	sctx.Config.Test.Evidence.AttachMedia = &enabled
 	sctx.Repo.UpstreamURL = "https://gitlab.example/group/sub/widgets.git"
 	image := writeEvidenceFile(t, sctx.EvidenceDir, "checkout.avif", []byte("image-v1"))
 	video := writeEvidenceFile(t, sctx.EvidenceDir, "walk.MP4", []byte("video"))
@@ -69,6 +71,8 @@ func TestPRStep_GitLabUploadFailureKeepsLocalReferenceAndReportsReason(t *testin
 	body, logs := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 		ctx.provider = scm.ProviderGitLab
 		ctx.Repo.UpstreamURL = "https://gitlab.example/group/widgets.git"
+		enabled := true
+		ctx.Config.Test.Evidence.AttachMedia = &enabled
 	})
 	if !strings.Contains(body, "local file:") || strings.Contains(body, "/uploads/") {
 		t.Fatalf("failed upload must retain local evidence, got:\n%s", body)
@@ -78,23 +82,41 @@ func TestPRStep_GitLabUploadFailureKeepsLocalReferenceAndReportsReason(t *testin
 	}
 }
 
-func TestPRStep_GitLabMediaHonorsPublicationOptOutAndStoreInRepo(t *testing.T) {
+func TestPRStep_GitLabMediaRequiresOptIn(t *testing.T) {
 	t.Parallel()
-	for _, store := range []bool{false, true} {
-		t.Run(fmt.Sprintf("store_in_repo=%v", store), func(t *testing.T) {
+	enabled, disabled := true, false
+	for _, tc := range []struct {
+		name         string
+		global, repo *bool
+		store, want  bool
+	}{
+		{name: "unconfigured"},
+		{name: "global opt-in", global: &enabled, want: true},
+		{name: "repository opt-in", repo: &enabled, want: true},
+		{name: "repository opt-out", global: &enabled, repo: &disabled},
+		{name: "repository overrides global opt-out", global: &disabled, repo: &enabled, want: true},
+		{name: "global opt-out", global: &disabled},
+		{name: "evidence branch opt-in", store: true, want: true},
+		{name: "evidence branch implies media", repo: &disabled, store: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			markdown := "![Checkout screenshot](/uploads/abc/checkout.png)"
 			uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": "/uploads/abc/checkout.png"}}
 			body, _ := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 				ctx.provider = scm.ProviderGitLab
 				ctx.Repo.UpstreamURL = "https://gitlab.example/group/widgets.git"
-				ctx.Config.Test.Evidence.AttachMedia = false
-				ctx.Config.Test.Evidence.StoreInRepo = store
+				ctx.Config.Test = config.Merge(
+					&config.GlobalConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: tc.global}}},
+					&config.RepoConfig{Test: config.TestRaw{Evidence: config.EvidenceRaw{AttachMedia: tc.repo, StoreInRepo: &tc.store}}},
+				).Test
 			})
-			if store && (!strings.Contains(body, markdown) || len(uploader.calls) != 1) {
-				t.Fatalf("store_in_repo must imply attachment upload; calls=%v body:\n%s", uploader.calls, body)
-			}
-			if !store && (!strings.Contains(body, "local file:") || len(uploader.calls) != 0) {
-				t.Fatalf("publication opt-out ignored; calls=%v body:\n%s", uploader.calls, body)
+			if tc.want {
+				if !strings.Contains(body, markdown) || strings.Contains(body, "local file:") || len(uploader.calls) != 1 {
+					t.Fatalf("opt-in must embed uploaded evidence; calls=%v body:\n%s", uploader.calls, body)
+				}
+			} else if !strings.Contains(body, "local file:") || strings.Contains(body, markdown) || len(uploader.calls) != 0 {
+				t.Fatalf("without opt-in evidence must stay local; calls=%v body:\n%s", uploader.calls, body)
 			}
 		})
 	}
@@ -106,6 +128,8 @@ func TestPRStep_GitLabNeverUploadsSymbolicLinks(t *testing.T) {
 	body, logs := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
 		ctx.provider = scm.ProviderGitLab
 		ctx.Repo.UpstreamURL = "https://gitlab.example/group/widgets.git"
+		enabled := true
+		ctx.Config.Test.Evidence.AttachMedia = &enabled
 		target := writeEvidenceFile(t, ctx.EvidenceDir, "target.png", []byte("private"))
 		if err := os.Remove(ctx.png); err != nil {
 			t.Fatal(err)

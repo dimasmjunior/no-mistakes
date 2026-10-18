@@ -112,7 +112,7 @@ intent:
 test:
   evidence:
     store_in_repo: false
-    attach_media: true
+    # attach_media: true # Opt in on GitLab; GitHub.com/GHEC defaults on
     dir: .no-mistakes/evidence
     branch: no-mistakes/evidence
     retention: 336h
@@ -1229,9 +1229,9 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. Media uploads are enabled by default on GitHub.com/GHEC and GitLab through `attach_media: true`.
-After upgrading, GitLab now uploads supported image and video evidence to the project's uploads store and embeds it in the merge request description, where earlier versions left local references.
-To opt out, set `attach_media: false` in global or repository config and leave `store_in_repo` off. Evidence-branch publication remains opt-in through `store_in_repo: true` on both forges; enabling it also enables media uploads.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>`. Media uploads default on for GitHub.com/GHEC and off for GitLab.
+To enable GitLab image and video uploads, set `attach_media: true` in global or repository config. An unconfigured GitLab run keeps local media references.
+Evidence-branch publication remains opt-in through `store_in_repo: true` on both forges; enabling it also enables media uploads, even with `attach_media: false`. To disable all evidence publication, set `attach_media: false` and leave `store_in_repo` off.
 
 |      |          |
 | ---- | -------- |
@@ -1240,7 +1240,7 @@ To opt out, set `attach_media: false` in global or repository config and leave `
 | Field                         | Type     | Default                  | Description                                                                |
 | ----------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
 | `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence to the repository's orphan evidence branch (GitHub.com and GitLab); also turns on media uploads |
-| `test.evidence.attach_media`  | `bool`   | `true`                   | Upload image and video evidence when rendering a GitHub PR or GitLab MR |
+| `test.evidence.attach_media`  | `bool`   | GitHub: `true`; GitLab: `false` | Upload image and video evidence when rendering a GitHub PR or GitLab MR |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
 | `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
 | `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute directory where run evidence is written on local disk             |
@@ -1250,7 +1250,7 @@ To opt out, set `attach_media: false` in global or repository config and leave `
 The test step always collects evidence outside the worktree, so artifacts never enter the branch under validation.
 On GitHub.com and GitHub Enterprise Cloud, image and video artifacts that pass GitHub's attach rules (png, jpg, jpeg, gif, webp, svg, mp4, mov, webm; images at most 10 MiB and videos at most 100 MiB) are uploaded to GitHub user-attachments when the PR body is rendered, unless `attach_media` is false and `store_in_repo` is also false.
 On GitHub, the testing section embeds images as Markdown and videos as bare URLs.
-On GitLab, the PR step uploads png, jpg, jpeg, gif, webp, svg, bmp, avif, mp4, webm, mov, m4v, and ogv files to the project's uploads API through `glab`, using the authentication and API settings glab has for that host. Only non-empty regular files inside the run's evidence directory are uploaded, and symbolic links are refused whether they point at a file or a directory. The returned project-relative URL is validated, then rendered with the artifact label as alt text; GitLab turns that image syntax into a video player for video files. The instance's own upload limits apply. The same `attach_media` and `store_in_repo` settings turn uploads on for both forges.
+On GitLab, with `attach_media: true` or `store_in_repo: true`, the PR step uploads png, jpg, jpeg, gif, webp, svg, bmp, avif, mp4, webm, mov, m4v, and ogv files to the project's uploads API through `glab`, using the authentication and API settings glab has for that host. Only non-empty regular files inside the run's evidence directory are uploaded, and symbolic links are refused whether they point at a file or a directory. The returned project-relative URL is validated, then rendered with the artifact label as alt text; GitLab turns that image syntax into a video player for video files. The instance's own upload limits apply.
 Uploads are cached per run, path, and content digest, so regenerating the description does not upload unchanged evidence again; a file whose contents changed is uploaded again.
 Uploads fail closed. An upload error or refusal is logged, and the artifact keeps its existing rendering: the commit-pinned evidence-branch link when there is one, otherwise a local reference. A failed upload never blocks PR or MR publication and never inserts a dead or guessed attachment URL.
 Other providers and GitHub Enterprise Server do not support these uploads, and GitHub App or Actions tokens cannot upload GitHub user-attachments. Text artifacts stay inlined.
