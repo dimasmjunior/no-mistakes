@@ -49,12 +49,14 @@ func hasPendingChecks(checks []scm.Check) bool {
 }
 
 // hasExecutingPendingChecks returns true if any CI check is still running or
-// queued on its own. A check the provider holds for maintainer approval is
-// pending but will not finish without a human, so it never defers escalation
-// of the other checks' failures.
+// queued on its own. A check the provider holds for a person - a maintainer
+// approval or a blocking manual job - is pending but will not finish without
+// that person, so it never defers escalation of a failure it is observed
+// alongside. Jobs GitLab left in `created` behind a blocked stage are ordinary
+// pending checks, so a failure there still waits for them, exactly as before.
 func hasExecutingPendingChecks(checks []scm.Check) bool {
 	for _, c := range checks {
-		if c.Pending() && !c.AwaitingApproval {
+		if c.Pending() && !c.HeldForHuman() {
 			return true
 		}
 	}
@@ -64,6 +66,15 @@ func hasExecutingPendingChecks(checks []scm.Check) bool {
 func hasAwaitingApprovalChecks(checks []scm.Check) bool {
 	for _, c := range checks {
 		if c.AwaitingApproval && c.Pending() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAwaitingManualJobChecks(checks []scm.Check) bool {
+	for _, c := range checks {
+		if c.AwaitingManualJob && c.Pending() {
 			return true
 		}
 	}
